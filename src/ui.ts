@@ -49,8 +49,9 @@ export function formatTask(task: Task): string {
     `Reward: ${task.rewardPerWorker} BDT`,
     `Workers: ${task.completedCount}/${task.workerLimit}`,
     `Type: ${task.approvalType}${verify}`,
+    task.websiteVisitSeconds ? `Visit Timer: ${task.websiteVisitSeconds}s` : undefined,
     "",
     "Instructions:",
     task.instructions
-  ].join("\n");
+  ].filter(Boolean).join("\n");
 }

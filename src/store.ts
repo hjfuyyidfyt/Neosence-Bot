@@ -9,6 +9,7 @@ import type {
   Submission,
   SupportTicket,
   Task,
+  TrackedChat,
   UserProfile,
   VerificationEvent,
   WalletTransaction,
@@ -27,7 +28,8 @@ const emptyState = (): StoreState => ({
   verificationEvents: [],
   referrals: [],
   supportTickets: [],
-  disputes: []
+  disputes: [],
+  trackedChats: []
 });
 
 export interface NeosenceStore {
@@ -49,6 +51,7 @@ export interface NeosenceStore {
   updateSupportTicket(ticket: SupportTicket): Promise<void>;
   addDispute(dispute: Dispute): Promise<void>;
   updateDispute(dispute: Dispute): Promise<void>;
+  upsertTrackedChat(chat: TrackedChat): Promise<void>;
 }
 
 abstract class CachedStore implements NeosenceStore {
@@ -153,6 +156,13 @@ abstract class CachedStore implements NeosenceStore {
     const index = this.state.disputes.findIndex((item) => item.id === dispute.id);
     if (index < 0) throw new Error(`Dispute not found: ${dispute.id}`);
     this.state.disputes[index] = dispute;
+    await this.save();
+  }
+
+  async upsertTrackedChat(chat: TrackedChat): Promise<void> {
+    const index = this.state.trackedChats.findIndex((item) => item.id === chat.id);
+    if (index >= 0) this.state.trackedChats[index] = chat;
+    else this.state.trackedChats.push(chat);
     await this.save();
   }
 }

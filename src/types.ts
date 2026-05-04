@@ -50,6 +50,7 @@ export interface Task {
   approvalType: TaskApprovalType;
   verificationType?: VerificationType;
   verificationTarget?: string;
+  websiteVisitSeconds?: number;
   proofRequired: boolean;
   status: TaskStatus;
   createdAt: string;
@@ -141,6 +142,15 @@ export interface Dispute {
   resolvedAt?: string;
 }
 
+export interface TrackedChat {
+  id: number;
+  title?: string;
+  type: "group" | "supergroup" | "channel" | "private";
+  botStatus: string;
+  canVerifyMembers: boolean;
+  updatedAt: string;
+}
+
 export interface StoreState {
   users: UserProfile[];
   tasks: Task[];
@@ -152,4 +162,5 @@ export interface StoreState {
   referrals: Referral[];
   supportTickets: SupportTicket[];
   disputes: Dispute[];
+  trackedChats: TrackedChat[];
 }

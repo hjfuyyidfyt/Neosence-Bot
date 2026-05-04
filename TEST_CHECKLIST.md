@@ -23,7 +23,10 @@ Use this after Railway is serving the latest commit.
 - Buyer opens `Post Task`.
 - Wizard creates a manual task.
 - Wizard creates an auto `telegram_join` task.
+- Telegram join task requires numeric chat ID and bot admin access.
+- Bot detects channel/group admin add/remove through Telegram chat-member updates.
 - Wizard creates an auto `website_visit` task.
+- Website visit task supports timer seconds and auto-pays after completion.
 - Wizard creates an auto `quiz` task.
 - `My Campaigns` lists campaigns.
 - Campaign detail shows stats and escrow.
@@ -41,6 +44,8 @@ Use this after Railway is serving the latest commit.
 - Website visit task gives tracking link, tracks visit, then pays reward.
 - Quiz task accepts correct answer and pays reward.
 - Duplicate submission is blocked.
+- Verify Now has cooldown protection.
+- Same buyer cannot create duplicate active target campaigns.
 
 ## Review
 

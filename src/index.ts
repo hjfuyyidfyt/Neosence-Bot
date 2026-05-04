@@ -23,7 +23,7 @@ import {
   walletSummary
 } from "./services.js";
 import { formatTask, mainMenu, modeMenu, taskActionButtons, taskButtons } from "./ui.js";
-import type { DepositRequest, Dispute, Submission, Task, TaskApprovalType, TaskStatus, VerificationType, Withdrawal } from "./types.js";
+import type { DepositRequest, Dispute, Submission, Task, TaskApprovalType, TaskStatus, TrackedChat, VerificationType, Withdrawal } from "./types.js";
 
 const store = createStore({ databaseUrl: config.databaseUrl, dataFile: config.dataFile });
 
@@ -48,6 +48,7 @@ type TaskDraftStep =
   | "instructions"
   | "verification"
   | "target"
+  | "website_timer"
   | "confirm";
 
 interface TaskDraft {
@@ -60,9 +61,16 @@ interface TaskDraft {
   instructions?: string;
   verificationType?: VerificationType;
   verificationTarget?: string;
+  websiteVisitSeconds?: number;
+  createdAt: number;
+  updatedAt: number;
+  expiresAt: number;
 }
 
 const taskDrafts = new Map<number, TaskDraft>();
+const DRAFT_TTL_MS = 60 * 60 * 1000;
+const VERIFY_COOLDOWN_MS = 15 * 1000;
+const verifyCooldowns = new Map<string, number>();
 
 bot.use(async (ctx, next) => {
   if (!ctx.from || isAdmin(ctx.from.id)) {
@@ -114,6 +122,15 @@ bot.command("profile", async (ctx) => {
   await ctx.reply(formatUserProfile(user.id), mainMenu(user));
 });
 
+bot.command("cancel", async (ctx) => {
+  await ensureUser(ctx.from);
+  taskDrafts.delete(ctx.from.id);
+  proofWaiters.delete(ctx.from.id);
+  quizWaiters.delete(ctx.from.id);
+  supportWaiters.delete(ctx.from.id);
+  await ctx.reply("Current draft/input cancelled.");
+});
+
 bot.command("posttask", async (ctx) => {
   const user = await ensureUser(ctx.from);
   if (user.mode !== "buyer") {
@@ -153,8 +170,15 @@ bot.command("posttask", async (ctx) => {
     workerLimit,
     approvalType,
     verificationType: verificationRaw as VerificationType | undefined,
-    verificationTarget: target
+    verificationTarget: target,
+    websiteVisitSeconds: verificationRaw === "website_visit" ? 30 : undefined
   });
+  try {
+    assertCampaignTargetAllowed(task);
+  } catch (error) {
+    await ctx.reply((error as Error).message);
+    return;
+  }
 
   await store.addTask(task);
   await store.addTransaction(createTransaction({
@@ -593,6 +617,22 @@ bot.action("noop", async (ctx) => {
   await ctx.answerCbQuery();
 });
 
+bot.on("my_chat_member", async (ctx) => {
+  const update = ctx.myChatMember;
+  const chat = update.chat;
+  const status = update.new_chat_member.status;
+  const trackedChat: TrackedChat = {
+    id: chat.id,
+    title: "title" in chat ? chat.title : undefined,
+    type: chat.type as TrackedChat["type"],
+    botStatus: status,
+    canVerifyMembers: status === "administrator" || status === "creator",
+    updatedAt: new Date().toISOString()
+  };
+  await store.upsertTrackedChat(trackedChat);
+  await notifyWaitingDraftsForChat(trackedChat);
+});
+
 bot.action(/^mode:(freelancer|buyer)$/, async (ctx) => {
   const mode = ctx.match[1] as "freelancer" | "buyer";
   const user = await ensureUser(ctx.from);
@@ -604,7 +644,7 @@ bot.action(/^mode:(freelancer|buyer)$/, async (ctx) => {
 
 bot.action(/^wizard:approval:(manual|auto)$/, async (ctx) => {
   await ctx.answerCbQuery();
-  const draft = taskDrafts.get(ctx.from.id);
+  const draft = getTaskDraft(ctx.from.id);
   if (!draft) {
     await ctx.reply("Task draft expired. /posttask diye abar shuru koro.");
     return;
@@ -618,7 +658,7 @@ bot.action(/^wizard:approval:(manual|auto)$/, async (ctx) => {
 
 bot.action(/^wizard:verification:(telegram_join|website_visit|website_webhook|app_attribution|in_app_code|quiz)$/, async (ctx) => {
   await ctx.answerCbQuery();
-  const draft = taskDrafts.get(ctx.from.id);
+  const draft = getTaskDraft(ctx.from.id);
   if (!draft) {
     await ctx.reply("Task draft expired. /posttask diye abar shuru koro.");
     return;
@@ -633,7 +673,7 @@ bot.action(/^wizard:verification:(telegram_join|website_visit|website_webhook|ap
 bot.action("wizard:confirm", async (ctx) => {
   await ctx.answerCbQuery();
   const user = await ensureUser(ctx.from);
-  const draft = taskDrafts.get(ctx.from.id);
+  const draft = getTaskDraft(ctx.from.id);
   if (!draft || !isCompleteDraft(draft)) {
     await ctx.reply("Task draft incomplete. /posttask diye abar shuru koro.");
     return;
@@ -648,8 +688,15 @@ bot.action("wizard:confirm", async (ctx) => {
     workerLimit: draft.workerLimit,
     approvalType: draft.approvalType,
     verificationType: draft.verificationType,
-    verificationTarget: draft.verificationTarget
+    verificationTarget: draft.verificationTarget,
+    websiteVisitSeconds: draft.websiteVisitSeconds
   });
+  try {
+    assertCampaignTargetAllowed(task);
+  } catch (error) {
+    await ctx.reply((error as Error).message);
+    return;
+  }
 
   await store.addTask(task);
   await store.addTransaction(createTransaction({
@@ -873,6 +920,13 @@ bot.action(/^proof:(.+)$/, async (ctx) => {
 bot.action(/^verify:(.+)$/, async (ctx) => {
   await ctx.answerCbQuery();
   await ensureUser(ctx.from);
+  const cooldownKey = `${ctx.from.id}:${ctx.match[1]}`;
+  const lastVerifyAt = verifyCooldowns.get(cooldownKey) ?? 0;
+  if (Date.now() - lastVerifyAt < VERIFY_COOLDOWN_MS) {
+    await ctx.reply("Ektu wait koro, Verify Now abar try korte 15 seconds gap lagbe.");
+    return;
+  }
+  verifyCooldowns.set(cooldownKey, Date.now());
   const task = store.snapshot().tasks.find((item) => item.id === ctx.match[1]);
   if (!task) {
     await ctx.reply("Task not found.");
@@ -911,7 +965,7 @@ bot.on("message", async (ctx, next) => {
     return;
   }
 
-  const draft = taskDrafts.get(ctx.from.id);
+  const draft = getTaskDraft(ctx.from.id);
   if (draft) {
     await handleTaskWizardMessage(ctx, draft);
     return;
@@ -1204,10 +1258,56 @@ async function closeSupportTicket(ticketId: string) {
 }
 
 async function startTaskWizard(ctx: Context & { from: TelegramFrom }) {
-  taskDrafts.set(ctx.from.id, { step: "title" });
+  setTaskDraft(ctx.from.id, { step: "title" });
   await ctx.reply("Task title likho. Example: Join our Telegram channel", Markup.inlineKeyboard([
     [Markup.button.callback("Cancel", "wizard:cancel")]
   ]));
+}
+
+function setTaskDraft(userId: number, draft: Partial<TaskDraft> & { step: TaskDraftStep }) {
+  const nowTime = Date.now();
+  const existing = taskDrafts.get(userId);
+  taskDrafts.set(userId, {
+    ...existing,
+    ...draft,
+    createdAt: existing?.createdAt ?? nowTime,
+    updatedAt: nowTime,
+    expiresAt: nowTime + DRAFT_TTL_MS
+  });
+}
+
+function getTaskDraft(userId: number): TaskDraft | undefined {
+  const draft = taskDrafts.get(userId);
+  if (!draft) return undefined;
+  if (Date.now() > draft.expiresAt) {
+    taskDrafts.delete(userId);
+    return undefined;
+  }
+  setTaskDraft(userId, draft);
+  return taskDrafts.get(userId);
+}
+
+async function notifyWaitingDraftsForChat(chat: TrackedChat) {
+  if (!chat.canVerifyMembers) return;
+
+  for (const [userId, draft] of taskDrafts.entries()) {
+    if (draft.verificationType !== "telegram_join" || draft.verificationTarget !== String(chat.id)) continue;
+    if (Date.now() > draft.expiresAt) {
+      taskDrafts.delete(userId);
+      continue;
+    }
+
+    draft.step = "confirm";
+    taskDrafts.set(userId, draft);
+    await bot.telegram.sendMessage(
+      userId,
+      [
+        `Bot admin access detected for ${chat.title ?? chat.id}.`,
+        "Telegram join task ready to publish."
+      ].join("\n"),
+      confirmTaskKeyboard()
+    );
+  }
 }
 
 async function handleTaskWizardMessage(ctx: Context & { from: TelegramFrom; message: unknown }, draft: TaskDraft) {
@@ -1288,7 +1388,50 @@ async function handleTaskWizardMessage(ctx: Context & { from: TelegramFrom; mess
   }
 
   if (draft.step === "target") {
-    draft.verificationTarget = text.slice(0, 300);
+    if (draft.verificationType === "telegram_join") {
+      const chatId = Number(text);
+      if (!Number.isFinite(chatId)) {
+        await ctx.reply("Channel/group-er numeric chat ID dao. Example: -1001234567890");
+        return;
+      }
+
+      const trackedChat = store.snapshot().trackedChats.find((chat) => chat.id === chatId);
+      if (!trackedChat?.canVerifyMembers) {
+        draft.verificationTarget = String(chatId);
+        taskDrafts.set(ctx.from.id, draft);
+        await ctx.reply([
+          "Ei chat ID bot-er added/admin list-e pawa jayni.",
+          "Bot-ke target channel/group-er admin banan, tarpor ami automatic detect korbo.",
+          `Waiting chat ID: ${chatId}`,
+          "Admin add hoye gele ei draft continue korar jonno same ID abar pathate paro."
+        ].join("\n"));
+        return;
+      }
+      draft.verificationTarget = String(chatId);
+    } else {
+      draft.verificationTarget = text.slice(0, 300);
+    }
+
+    if (draft.verificationType === "website_visit") {
+      draft.step = "website_timer";
+      taskDrafts.set(ctx.from.id, draft);
+      await ctx.reply("Visit timer seconds dao. Example: 30, 60, 120");
+      return;
+    }
+
+    draft.step = "confirm";
+    taskDrafts.set(ctx.from.id, draft);
+    await ctx.reply(formatDraftReview(draft), confirmTaskKeyboard());
+    return;
+  }
+
+  if (draft.step === "website_timer") {
+    const seconds = Number(text);
+    if (!Number.isInteger(seconds) || seconds < 5 || seconds > 600) {
+      await ctx.reply("Valid timer dao: 5 theke 600 seconds.");
+      return;
+    }
+    draft.websiteVisitSeconds = seconds;
     draft.step = "confirm";
     taskDrafts.set(ctx.from.id, draft);
     await ctx.reply(formatDraftReview(draft), confirmTaskKeyboard());
@@ -1319,6 +1462,7 @@ function formatDraftReview(draft: TaskDraft): string {
     `Total escrow: ${Math.round((rewardTotal + fee) * 100) / 100} BDT`,
     draft.verificationType ? `Verification: ${draft.verificationType}` : undefined,
     draft.verificationTarget ? `Target: ${draft.verificationTarget}` : undefined,
+    draft.websiteVisitSeconds ? `Visit timer: ${draft.websiteVisitSeconds}s` : undefined,
     "",
     "Instructions:",
     draft.instructions
@@ -1326,7 +1470,12 @@ function formatDraftReview(draft: TaskDraft): string {
 }
 
 function verificationTargetPrompt(type: VerificationType): string {
-  if (type === "telegram_join") return "Target channel/group username or chat ID dao. Example: @yourchannel";
+  if (type === "telegram_join") return [
+    "Target channel/group numeric chat ID dao.",
+    "Bot-ke oi channel/group-er admin banate hobe.",
+    "Bot admin hole backend automatically added list-e save korbe.",
+    "Example: -1001234567890"
+  ].join("\n");
   if (type === "website_visit") return "Tracking target URL dao. Example: https://example.com";
   if (type === "website_webhook") return "Webhook/event name or target URL dao.";
   if (type === "app_attribution") return "App/package/deep link target dao.";
@@ -1346,7 +1495,9 @@ function isCompleteDraft(draft: TaskDraft): draft is Required<Pick<TaskDraft, "t
 
   if (!baseComplete) return false;
   if (draft.approvalType === "manual") return true;
-  return Boolean(draft.verificationType && draft.verificationTarget);
+  if (!draft.verificationType || !draft.verificationTarget) return false;
+  if (draft.verificationType === "website_visit") return Boolean(draft.websiteVisitSeconds);
+  return true;
 }
 
 function extractText(message: unknown): string | undefined {
@@ -1783,6 +1934,19 @@ function campaignOutstandingEscrow(taskId: string): number {
   return Math.round(Math.max(outstanding, 0) * 100) / 100;
 }
 
+function assertCampaignTargetAllowed(newTask: Task) {
+  if (!newTask.verificationTarget) return;
+  const duplicate = store.snapshot().tasks.find((task) =>
+    task.buyerId === newTask.buyerId &&
+    task.status === "active" &&
+    task.verificationType === newTask.verificationType &&
+    task.verificationTarget === newTask.verificationTarget
+  );
+  if (duplicate) {
+    throw new Error(`Same target-e active campaign already ache: ${duplicate.title}`);
+  }
+}
+
 async function handleHttpRequest(request: IncomingMessage, response: ServerResponse) {
   const requestUrl = new URL(request.url ?? "/", publicBaseUrl());
 
@@ -1794,6 +1958,11 @@ async function handleHttpRequest(request: IncomingMessage, response: ServerRespo
 
   if (requestUrl.pathname === "/track/visit") {
     await handleWebsiteVisitTrack(request, response, requestUrl);
+    return;
+  }
+
+  if (requestUrl.pathname === "/track/complete") {
+    await handleWebsiteVisitComplete(response, requestUrl);
     return;
   }
 
@@ -1813,31 +1982,117 @@ async function handleWebsiteVisitTrack(request: IncomingMessage, response: Serve
     return;
   }
 
-  const alreadyPassed = state.verificationEvents.some(
-    (event) => event.taskId === taskId && event.workerId === workerId && event.type === "website_visit" && event.status === "passed"
+  const seconds = task.websiteVisitSeconds ?? 30;
+  const completeUrl = new URL("/track/complete", publicBaseUrl());
+  completeUrl.searchParams.set("taskId", taskId);
+  completeUrl.searchParams.set("workerId", String(workerId));
+  completeUrl.searchParams.set("ip", String(request.headers["x-forwarded-for"] ?? request.socket.remoteAddress ?? ""));
+  completeUrl.searchParams.set("ua", String(request.headers["user-agent"] ?? "unknown").slice(0, 160));
+
+  response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+  response.end(renderTimerPage({
+    seconds,
+    completeUrl: completeUrl.toString(),
+    targetUrl: task.verificationTarget
+  }));
+}
+
+async function handleWebsiteVisitComplete(response: ServerResponse, requestUrl: URL) {
+  const taskId = requestUrl.searchParams.get("taskId") ?? "";
+  const workerId = Number(requestUrl.searchParams.get("workerId"));
+  const task = store.snapshot().tasks.find((item) => item.id === taskId);
+
+  if (!task || task.verificationType !== "website_visit" || !Number.isFinite(workerId)) {
+    response.writeHead(400, { "content-type": "application/json" });
+    response.end(JSON.stringify({ ok: false, error: "invalid_tracking_request" }));
+    return;
+  }
+
+  const alreadySubmitted = store.snapshot().submissions.some(
+    (submission) => submission.taskId === task.id && submission.workerId === workerId
   );
 
-  if (!alreadyPassed) {
+  if (!alreadySubmitted) {
     await store.addVerificationEvent(createVerificationEvent({
       taskId,
       workerId,
       type: "website_visit",
       status: "passed",
       metadata: {
-        ip: request.headers["x-forwarded-for"] ?? request.socket.remoteAddress,
-        userAgent: request.headers["user-agent"] ?? "unknown"
+        ip: requestUrl.searchParams.get("ip") ?? "unknown",
+        userAgent: requestUrl.searchParams.get("ua") ?? "unknown",
+        seconds: task.websiteVisitSeconds ?? 30
       }
     }));
+
+    try {
+      await completeAutoTask(task, workerId, "website_visit_timer_completed", "Website visit timer completed");
+      await bot.telegram.sendMessage(workerId, `Website visit verified. ${task.rewardPerWorker} BDT added to your wallet.`);
+    } catch {
+      // Verify Now remains as fallback if auto payout races or fails.
+    }
   }
 
-  if (task.verificationTarget?.startsWith("http://") || task.verificationTarget?.startsWith("https://")) {
-    response.writeHead(302, { location: task.verificationTarget });
-    response.end();
-    return;
-  }
+  response.writeHead(200, { "content-type": "application/json" });
+  response.end(JSON.stringify({ ok: true }));
+}
 
-  response.writeHead(200, { "content-type": "text/plain" });
-  response.end("Visit tracked. Return to Telegram and press Verify Now.");
+function renderTimerPage(input: { seconds: number; completeUrl: string; targetUrl?: string }): string {
+  const targetLink = input.targetUrl?.startsWith("http://") || input.targetUrl?.startsWith("https://")
+    ? `<p><a href="${escapeHtml(input.targetUrl)}" target="_blank" rel="noopener">Open target website</a></p>`
+    : "";
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Neosence Visit Timer</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; min-height: 100vh; display: grid; place-items: center; background: #0f172a; color: #f8fafc; }
+    main { width: min(520px, calc(100vw - 32px)); text-align: center; }
+    .timer { font-size: 56px; font-weight: 700; margin: 20px 0; }
+    a { color: #93c5fd; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Neosence Visit Verification</h1>
+    <p>Keep this page open until the timer finishes.</p>
+    ${targetLink}
+    <div class="timer" id="timer">${input.seconds}s</div>
+    <p id="status">Verification running...</p>
+  </main>
+  <script>
+    let remaining = ${input.seconds};
+    const timer = document.getElementById("timer");
+    const status = document.getElementById("status");
+    const interval = setInterval(async () => {
+      remaining -= 1;
+      timer.textContent = remaining + "s";
+      if (remaining <= 0) {
+        clearInterval(interval);
+        status.textContent = "Completing verification...";
+        try {
+          const response = await fetch(${JSON.stringify(input.completeUrl)}, { method: "POST" });
+          status.textContent = response.ok ? "Verified. Return to Telegram." : "Could not verify. Press Verify Now in Telegram.";
+        } catch {
+          status.textContent = "Could not verify. Press Verify Now in Telegram.";
+        }
+      }
+    }, 1000);
+  </script>
+</body>
+</html>`;
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (char) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;"
+  })[char] ?? char);
 }
 
 function publicBaseUrl(): string {
@@ -1862,7 +2117,13 @@ async function verifyTelegramJoin(ctx: Context & { from: TelegramFrom }, taskId:
   }
 
   try {
-    const member = await ctx.telegram.getChatMember(task.verificationTarget, ctx.from.id);
+    const chatId = Number(task.verificationTarget);
+    const trackedChat = store.snapshot().trackedChats.find((chat) => chat.id === chatId);
+    if (!trackedChat?.canVerifyMembers) {
+      await ctx.reply("Bot ekhono ei channel/group-er admin access pache na. Buyer-ke bot admin korte bolo.");
+      return;
+    }
+    const member = await ctx.telegram.getChatMember(chatId, ctx.from.id);
     const passed = ["member", "administrator", "creator"].includes(member.status);
     if (!passed) {
       await ctx.reply("Membership verify hoyni. Join kore abar Verify Now press koro.");

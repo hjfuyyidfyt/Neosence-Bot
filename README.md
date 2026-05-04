@@ -141,7 +141,9 @@ For Telegram channel/group join tasks, add the bot to the target channel or grou
 
 Website and app auto verification are represented in the model as `website_visit`, `website_webhook`, `app_attribution`, and `in_app_code`; integrations can be added behind the same verification event system.
 
-For `website_visit` tasks, Neosence creates a tracking link at `/track/visit`. Set `PUBLIC_URL` in Railway to your public app URL so tracking links point to the deployed service.
+For `telegram_join` tasks, buyers must provide a numeric chat ID. The bot watches `my_chat_member` updates and stores channel/group access automatically when it is added as admin. If the bot is removed or demoted, the stored chat status updates automatically.
+
+For `website_visit` tasks, Neosence creates a tracking link at `/track/visit`. The tracking page runs the buyer-selected timer, calls `/track/complete`, and tries to auto-pay the worker. `Verify Now` remains as a cooldown-protected fallback.
 
 For `quiz` tasks, the buyer's verification target is the correct answer/code. Workers press `Verify Now`, submit the answer in Telegram, and receive instant reward when it matches.
 
@@ -188,3 +190,7 @@ Worker trust levels update from task history. Approved and auto-approved submiss
 ## Manual Testing
 
 Use `TEST_CHECKLIST.md` for the full end-to-end Telegram test pass after deployment.
+
+## Drafts And Spam Guards
+
+Task drafts expire after one hour of inactivity and can be cleared with `/cancel`. Buyers cannot create another active campaign with the same verification type and target.

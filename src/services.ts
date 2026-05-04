@@ -60,6 +60,7 @@ export function createTask(input: {
   approvalType: TaskApprovalType;
   verificationType?: VerificationType;
   verificationTarget?: string;
+  websiteVisitSeconds?: number;
 }): Task {
   return {
     id: id("task"),
@@ -73,6 +74,7 @@ export function createTask(input: {
     approvalType: input.approvalType,
     verificationType: input.verificationType,
     verificationTarget: input.verificationTarget,
+    websiteVisitSeconds: input.websiteVisitSeconds,
     proofRequired: input.approvalType === "manual",
     status: "active",
     createdAt: now(),
