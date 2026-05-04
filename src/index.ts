@@ -17,7 +17,7 @@ import {
   walletSummary
 } from "./services.js";
 import { formatTask, mainMenu, modeMenu, taskActionButtons, taskButtons } from "./ui.js";
-import type { TaskApprovalType, VerificationType } from "./types.js";
+import type { Submission, TaskApprovalType, VerificationType, Withdrawal } from "./types.js";
 
 const store = createStore({ databaseUrl: config.databaseUrl, dataFile: config.dataFile });
 
@@ -186,12 +186,16 @@ bot.command("withdraw", async (ctx) => {
 bot.command("admin", async (ctx) => {
   if (!ctx.from || !isAdmin(ctx.from.id)) return;
   const state = store.snapshot();
+  const pendingSubmissions = state.submissions.filter((item) => item.status === "pending");
+  const pendingWithdrawals = state.withdrawals.filter((item) => item.status === "pending");
   await ctx.reply([
     "Neosence Admin",
     `Users: ${state.users.length}`,
     `Tasks: ${state.tasks.length}`,
-    `Pending submissions: ${state.submissions.filter((item) => item.status === "pending").length}`,
-    `Pending withdrawals: ${state.withdrawals.filter((item) => item.status === "pending").length}`,
+    `Pending submissions: ${pendingSubmissions.length}`,
+    `Pending withdrawals: ${pendingWithdrawals.length}`,
+    "",
+    "Use buttons below for quick review.",
     "",
     "Commands:",
     "/deposit <userId> <amount> <note>",
@@ -199,7 +203,7 @@ bot.command("admin", async (ctx) => {
     "/reject <submissionId> <reason>",
     "/paywithdraw <withdrawalId>",
     "/rejectwithdraw <withdrawalId> <reason>"
-  ].join("\n"));
+  ].join("\n"), adminReviewKeyboard(pendingSubmissions, pendingWithdrawals));
 });
 
 bot.command("deposit", async (ctx) => {
@@ -232,12 +236,8 @@ bot.command("approve", async (ctx) => {
   }
 
   try {
-    const result = approveSubmission(store.snapshot(), submissionId);
-    await store.updateSubmission(result.submission);
-    await store.updateTask(result.task);
-    await store.addTransaction(result.earnTransaction);
-    await store.addTransaction(result.escrowReleaseTransaction);
-    await ctx.reply(`Approved ${submissionId}. Worker earned ${result.submission.rewardAmount} BDT.`);
+    const result = await approveSubmissionById(submissionId, ctx.from.id);
+    await ctx.reply(`Approved ${submissionId}. Worker earned ${result.rewardAmount} BDT.`);
   } catch (error) {
     await ctx.reply((error as Error).message);
   }
@@ -253,8 +253,7 @@ bot.command("reject", async (ctx) => {
   }
 
   try {
-    const submission = rejectSubmission(store.snapshot(), submissionId, reason);
-    await store.updateSubmission(submission);
+    await rejectSubmissionById(submissionId, reason, ctx.from.id);
     await ctx.reply(`Rejected ${submissionId}: ${reason}`);
   } catch (error) {
     await ctx.reply((error as Error).message);
@@ -269,28 +268,12 @@ bot.command("paywithdraw", async (ctx) => {
     return;
   }
 
-  const withdrawal = store.snapshot().withdrawals.find((item) => item.id === withdrawalId);
-  if (!withdrawal) {
-    await ctx.reply("Withdrawal not found.");
-    return;
+  try {
+    const withdrawal = await payWithdrawalById(withdrawalId);
+    await ctx.reply(`Withdrawal paid: ${withdrawal.id}`);
+  } catch (error) {
+    await ctx.reply((error as Error).message);
   }
-  if (withdrawal.status !== "pending") {
-    await ctx.reply(`Withdrawal already ${withdrawal.status}.`);
-    return;
-  }
-
-  await store.updateWithdrawal({
-    ...withdrawal,
-    status: "paid",
-    reviewedAt: new Date().toISOString()
-  });
-  await store.addTransaction(createTransaction({
-    userId: withdrawal.userId,
-    type: "withdraw_paid",
-    amount: withdrawal.amount,
-    note: withdrawal.method
-  }));
-  await ctx.reply(`Withdrawal paid: ${withdrawal.id}`);
 });
 
 bot.command("rejectwithdraw", async (ctx) => {
@@ -302,28 +285,12 @@ bot.command("rejectwithdraw", async (ctx) => {
     return;
   }
 
-  const withdrawal = store.snapshot().withdrawals.find((item) => item.id === withdrawalId);
-  if (!withdrawal) {
-    await ctx.reply("Withdrawal not found.");
-    return;
+  try {
+    const withdrawal = await rejectWithdrawalById(withdrawalId, reason);
+    await ctx.reply(`Withdrawal rejected: ${withdrawal.id}`);
+  } catch (error) {
+    await ctx.reply((error as Error).message);
   }
-  if (withdrawal.status !== "pending") {
-    await ctx.reply(`Withdrawal already ${withdrawal.status}.`);
-    return;
-  }
-
-  await store.updateWithdrawal({
-    ...withdrawal,
-    status: "rejected",
-    reviewedAt: new Date().toISOString()
-  });
-  await store.addTransaction(createTransaction({
-    userId: withdrawal.userId,
-    type: "withdraw_rejected",
-    amount: withdrawal.amount,
-    note: reason
-  }));
-  await ctx.reply(`Withdrawal rejected: ${withdrawal.id}`);
 });
 
 bot.action("menu:earn", async (ctx) => {
@@ -375,10 +342,11 @@ bot.action("menu:submissions", async (ctx) => {
     return;
   }
 
+  const pending = submissions.filter((submission) => submission.status === "pending");
   await ctx.reply([
     "Recent campaign submissions:",
     ...submissions.slice(0, 10).map((submission) => `- ${submission.id}: ${submission.status}, worker ${submission.workerId}, ${submission.rewardAmount} BDT`)
-  ].join("\n"));
+  ].join("\n"), buyerSubmissionKeyboard(pending));
 });
 
 bot.action("menu:withdraw", async (ctx) => {
@@ -394,6 +362,10 @@ bot.action("menu:referrals", async (ctx) => {
 bot.action("menu:support", async (ctx) => {
   await ctx.answerCbQuery();
   await ctx.reply("Support MVP: contact admin. Later ekhane ticket system add hobe.");
+});
+
+bot.action("noop", async (ctx) => {
+  await ctx.answerCbQuery();
 });
 
 bot.action(/^mode:(freelancer|buyer)$/, async (ctx) => {
@@ -472,6 +444,79 @@ bot.action("wizard:cancel", async (ctx) => {
   taskDrafts.delete(ctx.from.id);
   const user = await ensureUser(ctx.from);
   await ctx.reply("Task draft cancelled.", mainMenu(user));
+});
+
+bot.action(/^submission:view:(.+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const user = await ensureUser(ctx.from);
+  const submission = store.snapshot().submissions.find((item) => item.id === ctx.match[1]);
+  if (!submission) {
+    await ctx.reply("Submission not found.");
+    return;
+  }
+
+  const task = store.snapshot().tasks.find((item) => item.id === submission.taskId);
+  if (!task) {
+    await ctx.reply("Task not found.");
+    return;
+  }
+
+  if (task.buyerId !== user.id && !isAdmin(user.id)) {
+    await ctx.reply("Ei submission dekhar permission nei.");
+    return;
+  }
+
+  await ctx.reply(formatSubmissionReview(submission.id), submissionReviewKeyboard(submission.id, submission.status));
+});
+
+bot.action(/^submission:approve:(.+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  try {
+    const result = await approveSubmissionById(ctx.match[1], ctx.from.id);
+    await ctx.reply(`Approved. Worker ${result.workerId} earned ${result.rewardAmount} BDT.`);
+  } catch (error) {
+    await ctx.reply((error as Error).message);
+  }
+});
+
+bot.action(/^submission:reject:(.+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  try {
+    const submission = await rejectSubmissionById(ctx.match[1], "Rejected by reviewer", ctx.from.id);
+    await ctx.reply(`Rejected ${submission.id}.`);
+  } catch (error) {
+    await ctx.reply((error as Error).message);
+  }
+});
+
+bot.action(/^withdrawal:pay:(.+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!isAdmin(ctx.from.id)) {
+    await ctx.reply("Admin permission required.");
+    return;
+  }
+
+  try {
+    const withdrawal = await payWithdrawalById(ctx.match[1]);
+    await ctx.reply(`Withdrawal paid: ${withdrawal.id}`);
+  } catch (error) {
+    await ctx.reply((error as Error).message);
+  }
+});
+
+bot.action(/^withdrawal:reject:(.+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!isAdmin(ctx.from.id)) {
+    await ctx.reply("Admin permission required.");
+    return;
+  }
+
+  try {
+    const withdrawal = await rejectWithdrawalById(ctx.match[1], "Rejected by admin");
+    await ctx.reply(`Withdrawal rejected: ${withdrawal.id}`);
+  } catch (error) {
+    await ctx.reply((error as Error).message);
+  }
 });
 
 bot.action(/^task:(.+)$/, async (ctx) => {
@@ -721,6 +766,144 @@ function isCompleteDraft(draft: TaskDraft): draft is Required<Pick<TaskDraft, "t
 function extractText(message: unknown): string | undefined {
   const textMessage = message as { text?: string };
   return textMessage.text?.trim();
+}
+
+function adminReviewKeyboard(submissions: Submission[], withdrawals: Withdrawal[]) {
+  const rows = [
+    ...submissions.slice(0, 5).map((submission) => [
+      Markup.button.callback(`Review ${shortId(submission.id)}`, `submission:view:${submission.id}`)
+    ]),
+    ...withdrawals.slice(0, 5).map((withdrawal) => [
+      Markup.button.callback(`Pay ${shortId(withdrawal.id)} - ${withdrawal.amount} BDT`, `withdrawal:pay:${withdrawal.id}`),
+      Markup.button.callback(`Reject ${shortId(withdrawal.id)}`, `withdrawal:reject:${withdrawal.id}`)
+    ])
+  ];
+
+  if (rows.length === 0) {
+    return Markup.inlineKeyboard([[Markup.button.callback("No pending review", "noop")]]);
+  }
+
+  return Markup.inlineKeyboard(rows);
+}
+
+function buyerSubmissionKeyboard(submissions: Submission[]) {
+  if (submissions.length === 0) {
+    return Markup.inlineKeyboard([[Markup.button.callback("No pending submissions", "noop")]]);
+  }
+
+  return Markup.inlineKeyboard(
+    submissions.slice(0, 8).map((submission) => [
+      Markup.button.callback(`Review ${shortId(submission.id)}`, `submission:view:${submission.id}`)
+    ])
+  );
+}
+
+function submissionReviewKeyboard(submissionId: string, status: Submission["status"]) {
+  if (status !== "pending") {
+    return Markup.inlineKeyboard([[Markup.button.callback("Already reviewed", "noop")]]);
+  }
+
+  return Markup.inlineKeyboard([
+    [
+      Markup.button.callback("Approve", `submission:approve:${submissionId}`),
+      Markup.button.callback("Reject", `submission:reject:${submissionId}`)
+    ]
+  ]);
+}
+
+function formatSubmissionReview(submissionId: string): string {
+  const state = store.snapshot();
+  const submission = state.submissions.find((item) => item.id === submissionId);
+  if (!submission) return "Submission not found.";
+  const task = state.tasks.find((item) => item.id === submission.taskId);
+
+  return [
+    `Submission: ${submission.id}`,
+    `Status: ${submission.status}`,
+    `Task: ${task?.title ?? submission.taskId}`,
+    `Worker: ${submission.workerId}`,
+    `Reward: ${submission.rewardAmount} BDT`,
+    submission.rejectReason ? `Reject reason: ${submission.rejectReason}` : undefined,
+    "",
+    "Proof:",
+    submission.proof ?? "No proof"
+  ].filter(Boolean).join("\n");
+}
+
+async function approveSubmissionById(submissionId: string, reviewerId: number) {
+  assertCanReviewSubmission(submissionId, reviewerId);
+  const result = approveSubmission(store.snapshot(), submissionId);
+  await store.updateSubmission(result.submission);
+  await store.updateTask(result.task);
+  await store.addTransaction(result.earnTransaction);
+  await store.addTransaction(result.escrowReleaseTransaction);
+
+  return {
+    workerId: result.submission.workerId,
+    rewardAmount: result.submission.rewardAmount
+  };
+}
+
+async function rejectSubmissionById(submissionId: string, reason: string, reviewerId: number) {
+  assertCanReviewSubmission(submissionId, reviewerId);
+  const submission = rejectSubmission(store.snapshot(), submissionId, reason);
+  await store.updateSubmission(submission);
+  return submission;
+}
+
+function assertCanReviewSubmission(submissionId: string, reviewerId: number) {
+  const state = store.snapshot();
+  const submission = state.submissions.find((item) => item.id === submissionId);
+  if (!submission) throw new Error("Submission not found");
+  const task = state.tasks.find((item) => item.id === submission.taskId);
+  if (!task) throw new Error("Task not found");
+  if (task.buyerId !== reviewerId && !isAdmin(reviewerId)) {
+    throw new Error("Ei submission review korar permission nei.");
+  }
+}
+
+async function payWithdrawalById(withdrawalId: string) {
+  const withdrawal = store.snapshot().withdrawals.find((item) => item.id === withdrawalId);
+  if (!withdrawal) throw new Error("Withdrawal not found.");
+  if (withdrawal.status !== "pending") throw new Error(`Withdrawal already ${withdrawal.status}.`);
+
+  const paidWithdrawal: Withdrawal = {
+    ...withdrawal,
+    status: "paid",
+    reviewedAt: new Date().toISOString()
+  };
+  await store.updateWithdrawal(paidWithdrawal);
+  await store.addTransaction(createTransaction({
+    userId: withdrawal.userId,
+    type: "withdraw_paid",
+    amount: withdrawal.amount,
+    note: withdrawal.method
+  }));
+  return paidWithdrawal;
+}
+
+async function rejectWithdrawalById(withdrawalId: string, reason: string) {
+  const withdrawal = store.snapshot().withdrawals.find((item) => item.id === withdrawalId);
+  if (!withdrawal) throw new Error("Withdrawal not found.");
+  if (withdrawal.status !== "pending") throw new Error(`Withdrawal already ${withdrawal.status}.`);
+
+  const rejectedWithdrawal: Withdrawal = {
+    ...withdrawal,
+    status: "rejected",
+    reviewedAt: new Date().toISOString()
+  };
+  await store.updateWithdrawal(rejectedWithdrawal);
+  await store.addTransaction(createTransaction({
+    userId: withdrawal.userId,
+    type: "withdraw_rejected",
+    amount: withdrawal.amount,
+    note: reason
+  }));
+  return rejectedWithdrawal;
+}
+
+function shortId(id: string): string {
+  return id.length <= 12 ? id : id.slice(0, 12);
 }
 
 async function verifyTelegramJoin(ctx: Context & { from: TelegramFrom }, taskId: string) {

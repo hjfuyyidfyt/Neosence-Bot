@@ -126,3 +126,9 @@ Final publish confirmation
 For Telegram channel/group join tasks, add the bot to the target channel or group so it can call `getChatMember`. Use the target chat ID or public `@username` as the verification target.
 
 Website and app auto verification are represented in the model as `website_visit`, `website_webhook`, `app_attribution`, and `in_app_code`; integrations can be added behind the same verification event system.
+
+## Review Flow
+
+- Buyers can open `Submissions` in buyer mode and review pending proof with buttons.
+- Admins can use `/admin` to see pending submissions and withdrawals with quick action buttons.
+- Command fallbacks still work for admin operations: `/approve`, `/reject`, `/paywithdraw`, and `/rejectwithdraw`.
