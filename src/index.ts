@@ -109,6 +109,11 @@ bot.command("wallet", async (ctx) => {
   await ctx.reply(formatWallet(user.id, user.mode));
 });
 
+bot.command("profile", async (ctx) => {
+  const user = await ensureUser(ctx.from);
+  await ctx.reply(formatUserProfile(user.id), mainMenu(user));
+});
+
 bot.command("posttask", async (ctx) => {
   const user = await ensureUser(ctx.from);
   if (user.mode !== "buyer") {
@@ -572,6 +577,12 @@ bot.action("menu:referrals", async (ctx) => {
   await ctx.reply(formatReferralStats(user.id, ctx.botInfo?.username));
 });
 
+bot.action("menu:profile", async (ctx) => {
+  await ctx.answerCbQuery();
+  const user = await ensureUser(ctx.from);
+  await ctx.reply(formatUserProfile(user.id), mainMenu(user));
+});
+
 bot.action("menu:support", async (ctx) => {
   await ctx.answerCbQuery();
   supportWaiters.add(ctx.from.id);
@@ -989,6 +1000,39 @@ function formatWithdrawHelp(userId: number): string {
     "",
     "Format:",
     "/withdraw 100 bkash:01XXXXXXXXX"
+  ].join("\n");
+}
+
+function formatUserProfile(userId: number): string {
+  const state = store.snapshot();
+  const user = state.users.find((item) => item.id === userId);
+  const wallet = walletSummary(state, userId);
+  const submissions = state.submissions.filter((submission) => submission.workerId === userId);
+  const approved = submissions.filter((submission) => submission.status === "approved" || submission.status === "auto_approved").length;
+  const rejected = submissions.filter((submission) => submission.status === "rejected").length;
+  const campaigns = state.tasks.filter((task) => task.buyerId === userId);
+  const referrals = state.referrals.filter((referral) => referral.referrerId === userId);
+  const disputes = state.disputes.filter((dispute) => dispute.workerId === userId);
+
+  return [
+    "Neosence Profile",
+    `User ID: ${userId}`,
+    `Name: ${user?.firstName ?? "Unknown"}`,
+    `Username: ${user?.username ? `@${user.username}` : "N/A"}`,
+    `Mode: ${user?.mode ?? "N/A"}`,
+    `Trust: ${user?.trustLevel ?? calculateTrustLevel(state, userId)}`,
+    "",
+    "Wallet:",
+    `Available: ${wallet.available} BDT`,
+    `Withdrawable: ${wallet.withdrawable} BDT`,
+    `Escrow: ${wallet.escrow} BDT`,
+    "",
+    "Activity:",
+    `Approved jobs: ${approved}`,
+    `Rejected jobs: ${rejected}`,
+    `Disputes: ${disputes.length}`,
+    `Buyer campaigns: ${campaigns.length}`,
+    `Referrals: ${referrals.length}`
   ].join("\n");
 }
 

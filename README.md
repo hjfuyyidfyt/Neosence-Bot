@@ -77,6 +77,7 @@ The health response includes service name, version, environment, start time, and
 - `/posttask` - create a task with the guided buyer wizard
 - `/mytasks` - view owned or accepted tasks
 - `/wallet` - wallet summary
+- `/profile` - user profile, trust, wallet, and activity summary
 - `/withdraw 100 bkash:01XXXXXXXXX` - request withdrawal
 - `/admin` - admin dashboard
 - `/depositreq 500 bkash trxid-or-proof-note` - user submits deposit request

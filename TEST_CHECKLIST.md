@@ -16,6 +16,7 @@ Use this after Railway is serving the latest commit.
 - Freelancer menu shows worker actions only.
 - Switch to buyer shows buyer actions only.
 - Switch back to freelancer restores worker menu.
+- `/profile` and Profile button show user stats.
 
 ## Buyer Campaigns
 
