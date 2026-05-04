@@ -2,11 +2,20 @@ import { Markup } from "telegraf";
 import type { Task, UserProfile } from "./types.js";
 
 export function mainMenu(user: UserProfile) {
-  const modeLabel = user.mode === "freelancer" ? "Freelancer" : "Buyer";
+  if (user.mode === "buyer") {
+    return Markup.inlineKeyboard([
+      [Markup.button.callback("Post Task", "menu:post")],
+      [Markup.button.callback("My Campaigns", "menu:campaigns"), Markup.button.callback("Submissions", "menu:submissions")],
+      [Markup.button.callback("Deposit / Balance", "menu:wallet"), Markup.button.callback("Switch to Freelancer", "mode:freelancer")],
+      [Markup.button.callback("Support", "menu:support")]
+    ]);
+  }
+
   return Markup.inlineKeyboard([
-    [Markup.button.callback("Earn Money", "menu:earn"), Markup.button.callback("Post Task", "menu:post")],
-    [Markup.button.callback("Wallet", "menu:wallet"), Markup.button.callback(`Mode: ${modeLabel}`, "menu:mode")],
-    [Markup.button.callback("My Tasks", "menu:mytasks"), Markup.button.callback("Support", "menu:support")]
+    [Markup.button.callback("Earn Money", "menu:earn")],
+    [Markup.button.callback("My Jobs", "menu:jobs"), Markup.button.callback("Wallet", "menu:wallet")],
+    [Markup.button.callback("Withdraw", "menu:withdraw"), Markup.button.callback("Switch to Buyer", "mode:buyer")],
+    [Markup.button.callback("Referrals", "menu:referrals"), Markup.button.callback("Support", "menu:support")]
   ]);
 }
 

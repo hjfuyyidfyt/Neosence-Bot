@@ -75,6 +75,31 @@ Railway Postgres or Neon Postgres both work. Keep the database URL only in Railw
 - `/paywithdraw <withdrawalId>` - admin marks withdrawal paid
 - `/rejectwithdraw <withdrawalId> <reason>` - admin rejects withdrawal
 
+## Mode-Specific Menu
+
+Freelancer mode shows worker actions only:
+
+```text
+Earn Money
+My Jobs
+Wallet
+Withdraw
+Referrals
+Switch to Buyer
+Support
+```
+
+Buyer mode shows campaign actions only:
+
+```text
+Post Task
+My Campaigns
+Submissions
+Deposit / Balance
+Switch to Freelancer
+Support
+```
+
 ## Auto Verification Notes
 
 For Telegram channel/group join tasks, add the bot to the target channel or group so it can call `getChatMember`. Use the target chat ID or public `@username` as the verification target.

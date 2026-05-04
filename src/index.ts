@@ -41,7 +41,7 @@ const proofWaiters = new Map<number, string>();
 bot.start(async (ctx) => {
   const user = await ensureUser(ctx.from);
   await ctx.reply(
-    `Welcome to Neosence Bot.\n\nEarn from verified micro tasks or post work for real users. Current mode: ${user.mode}.`,
+    `Welcome to Neosence Bot.\n\nCurrent workspace: ${formatMode(user.mode)}.`,
     mainMenu(user)
   );
 });
@@ -313,6 +313,11 @@ bot.action("menu:earn", async (ctx) => {
 
 bot.action("menu:post", async (ctx) => {
   await ctx.answerCbQuery();
+  const user = await ensureUser(ctx.from);
+  if (user.mode !== "buyer") {
+    await ctx.reply("Task post korte Buyer mode-e switch koro.", mainMenu(user));
+    return;
+  }
   await ctx.reply("Use /posttask to create a task. Example format dekhte sudhu /posttask pathao.");
 });
 
@@ -327,9 +332,42 @@ bot.action("menu:mode", async (ctx) => {
   await ctx.reply("Choose mode:", modeMenu());
 });
 
-bot.action("menu:mytasks", async (ctx) => {
+bot.action("menu:jobs", async (ctx) => {
   await ctx.answerCbQuery();
-  await ctx.reply("Use /mytasks to see your buyer tasks and freelancer submissions.");
+  await ctx.reply("Use /mytasks to see your accepted jobs and submissions.");
+});
+
+bot.action("menu:campaigns", async (ctx) => {
+  await ctx.answerCbQuery();
+  await ctx.reply("Use /mytasks to see your buyer campaigns.");
+});
+
+bot.action("menu:submissions", async (ctx) => {
+  await ctx.answerCbQuery();
+  const user = await ensureUser(ctx.from);
+  const state = store.snapshot();
+  const taskIds = new Set(state.tasks.filter((task) => task.buyerId === user.id).map((task) => task.id));
+  const submissions = state.submissions.filter((submission) => taskIds.has(submission.taskId));
+
+  if (submissions.length === 0) {
+    await ctx.reply("Ekhono kono campaign submission asheni.");
+    return;
+  }
+
+  await ctx.reply([
+    "Recent campaign submissions:",
+    ...submissions.slice(0, 10).map((submission) => `- ${submission.id}: ${submission.status}, worker ${submission.workerId}, ${submission.rewardAmount} BDT`)
+  ].join("\n"));
+});
+
+bot.action("menu:withdraw", async (ctx) => {
+  await ctx.answerCbQuery();
+  await ctx.reply("Withdraw request format: /withdraw 100 bkash:01XXXXXXXXX");
+});
+
+bot.action("menu:referrals", async (ctx) => {
+  await ctx.answerCbQuery();
+  await ctx.reply("Referral system next milestone-e add hobe. Ekhon task marketplace core flow test kora hocche.");
 });
 
 bot.action("menu:support", async (ctx) => {
@@ -340,9 +378,10 @@ bot.action("menu:support", async (ctx) => {
 bot.action(/^mode:(freelancer|buyer)$/, async (ctx) => {
   const mode = ctx.match[1] as "freelancer" | "buyer";
   const user = await ensureUser(ctx.from);
-  await store.upsertUser(switchMode(user, mode));
+  const updatedUser = switchMode(user, mode);
+  await store.upsertUser(updatedUser);
   await ctx.answerCbQuery(`Mode changed to ${mode}`);
-  await ctx.reply(`Neosence mode changed: ${mode}`);
+  await ctx.reply(`Workspace changed: ${formatMode(mode)}`, mainMenu(updatedUser));
 });
 
 bot.action(/^task:(.+)$/, async (ctx) => {
@@ -431,6 +470,10 @@ function formatWallet(userId: number): string {
     `Withdrawable: ${wallet.withdrawable} BDT`,
     `Escrow locked: ${wallet.escrow} BDT`
   ].join("\n");
+}
+
+function formatMode(mode: "freelancer" | "buyer"): string {
+  return mode === "freelancer" ? "Freelancer Mode" : "Buyer Mode";
 }
 
 async function verifyTelegramJoin(ctx: Context & { from: TelegramFrom }, taskId: string) {
