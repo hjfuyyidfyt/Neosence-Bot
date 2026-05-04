@@ -17,7 +17,7 @@ import {
   walletSummary
 } from "./services.js";
 import { formatTask, mainMenu, modeMenu, taskActionButtons, taskButtons } from "./ui.js";
-import type { Submission, TaskApprovalType, VerificationType, Withdrawal } from "./types.js";
+import type { Submission, Task, TaskApprovalType, TaskStatus, VerificationType, Withdrawal } from "./types.js";
 
 const store = createStore({ databaseUrl: config.databaseUrl, dataFile: config.dataFile });
 
@@ -327,7 +327,14 @@ bot.action("menu:jobs", async (ctx) => {
 
 bot.action("menu:campaigns", async (ctx) => {
   await ctx.answerCbQuery();
-  await ctx.reply("Use /mytasks to see your buyer campaigns.");
+  const user = await ensureUser(ctx.from);
+  const tasks = store.snapshot().tasks.filter((task) => task.buyerId === user.id);
+  if (tasks.length === 0) {
+    await ctx.reply("Ekhono kono campaign nei. Post Task diye first campaign create koro.", mainMenu(user));
+    return;
+  }
+
+  await ctx.reply(formatCampaignList(tasks), campaignListKeyboard(tasks));
 });
 
 bot.action("menu:submissions", async (ctx) => {
@@ -467,6 +474,54 @@ bot.action(/^submission:view:(.+)$/, async (ctx) => {
   }
 
   await ctx.reply(formatSubmissionReview(submission.id), submissionReviewKeyboard(submission.id, submission.status));
+});
+
+bot.action(/^campaign:view:(.+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const user = await ensureUser(ctx.from);
+
+  try {
+    const task = getReviewableTask(ctx.match[1], user.id);
+    await ctx.reply(formatCampaignDetail(task.id), campaignActionKeyboard(task.id, task.status));
+  } catch (error) {
+    await ctx.reply((error as Error).message);
+  }
+});
+
+bot.action(/^campaign:pause:(.+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const user = await ensureUser(ctx.from);
+
+  try {
+    const task = await updateCampaignStatus(ctx.match[1], user.id, "paused");
+    await ctx.reply(`Campaign paused: ${task.title}`, campaignActionKeyboard(task.id, task.status));
+  } catch (error) {
+    await ctx.reply((error as Error).message);
+  }
+});
+
+bot.action(/^campaign:resume:(.+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const user = await ensureUser(ctx.from);
+
+  try {
+    const task = await updateCampaignStatus(ctx.match[1], user.id, "active");
+    await ctx.reply(`Campaign resumed: ${task.title}`, campaignActionKeyboard(task.id, task.status));
+  } catch (error) {
+    await ctx.reply((error as Error).message);
+  }
+});
+
+bot.action(/^campaign:cancel:(.+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const user = await ensureUser(ctx.from);
+
+  try {
+    const result = await cancelCampaign(ctx.match[1], user.id);
+    await ctx.reply(`Campaign cancelled: ${result.task.title}\nRefunded: ${result.refundAmount} BDT`);
+  } catch (error) {
+    await ctx.reply((error as Error).message);
+  }
 });
 
 bot.action(/^submission:approve:(.+)$/, async (ctx) => {
@@ -904,6 +959,129 @@ async function rejectWithdrawalById(withdrawalId: string, reason: string) {
 
 function shortId(id: string): string {
   return id.length <= 12 ? id : id.slice(0, 12);
+}
+
+function campaignListKeyboard(tasks: Task[]) {
+  return Markup.inlineKeyboard(
+    tasks.slice(0, 10).map((task) => [
+      Markup.button.callback(`${task.title} (${task.status})`, `campaign:view:${task.id}`)
+    ])
+  );
+}
+
+function campaignActionKeyboard(taskId: string, status: TaskStatus) {
+  const rows = [];
+  if (status === "active") {
+    rows.push([Markup.button.callback("Pause", `campaign:pause:${taskId}`)]);
+  }
+  if (status === "paused") {
+    rows.push([Markup.button.callback("Resume", `campaign:resume:${taskId}`)]);
+  }
+  if (status === "active" || status === "paused") {
+    rows.push([Markup.button.callback("Cancel + Refund Unused", `campaign:cancel:${taskId}`)]);
+  }
+  rows.push([Markup.button.callback("Submissions", "menu:submissions")]);
+  return Markup.inlineKeyboard(rows);
+}
+
+function formatCampaignList(tasks: Task[]): string {
+  return [
+    "My Campaigns",
+    "",
+    ...tasks.slice(0, 10).map((task) => {
+      const pending = store.snapshot().submissions.filter((submission) => submission.taskId === task.id && submission.status === "pending").length;
+      return `- ${task.title}: ${task.status}, ${task.completedCount}/${task.workerLimit}, pending ${pending}`;
+    })
+  ].join("\n");
+}
+
+function formatCampaignDetail(taskId: string): string {
+  const state = store.snapshot();
+  const task = state.tasks.find((item) => item.id === taskId);
+  if (!task) return "Campaign not found.";
+  const submissions = state.submissions.filter((submission) => submission.taskId === task.id);
+  const pending = submissions.filter((submission) => submission.status === "pending").length;
+  const approved = submissions.filter((submission) => submission.status === "approved" || submission.status === "auto_approved").length;
+  const rejected = submissions.filter((submission) => submission.status === "rejected").length;
+
+  return [
+    formatTask(task),
+    "",
+    "Campaign stats:",
+    `Pending proof: ${pending}`,
+    `Approved/auto: ${approved}`,
+    `Rejected: ${rejected}`,
+    `Outstanding escrow: ${campaignOutstandingEscrow(task.id)} BDT`
+  ].join("\n");
+}
+
+function getReviewableTask(taskId: string, userId: number): Task {
+  const task = store.snapshot().tasks.find((item) => item.id === taskId);
+  if (!task) throw new Error("Campaign not found.");
+  if (task.buyerId !== userId && !isAdmin(userId)) {
+    throw new Error("Ei campaign manage korar permission nei.");
+  }
+  return task;
+}
+
+async function updateCampaignStatus(taskId: string, userId: number, status: Extract<TaskStatus, "active" | "paused">) {
+  const task = getReviewableTask(taskId, userId);
+  if (task.status === "completed" || task.status === "cancelled") {
+    throw new Error(`Campaign already ${task.status}.`);
+  }
+  const updatedTask: Task = {
+    ...task,
+    status,
+    updatedAt: new Date().toISOString()
+  };
+  await store.updateTask(updatedTask);
+  return updatedTask;
+}
+
+async function cancelCampaign(taskId: string, userId: number) {
+  const task = getReviewableTask(taskId, userId);
+  if (task.status === "completed" || task.status === "cancelled") {
+    throw new Error(`Campaign already ${task.status}.`);
+  }
+
+  const pendingCount = store.snapshot().submissions.filter(
+    (submission) => submission.taskId === task.id && submission.status === "pending"
+  ).length;
+  if (pendingCount > 0) {
+    throw new Error("Cancel korar age pending submissions approve/reject koro.");
+  }
+
+  const refundAmount = campaignOutstandingEscrow(task.id);
+  const updatedTask: Task = {
+    ...task,
+    status: "cancelled",
+    updatedAt: new Date().toISOString()
+  };
+
+  await store.updateTask(updatedTask);
+  if (refundAmount > 0) {
+    await store.addTransaction(createTransaction({
+      userId: task.buyerId,
+      type: "escrow_refund",
+      amount: refundAmount,
+      taskId: task.id,
+      note: "Unused campaign escrow refund"
+    }));
+  }
+
+  return { task: updatedTask, refundAmount };
+}
+
+function campaignOutstandingEscrow(taskId: string): number {
+  const outstanding = store.snapshot().walletTransactions
+    .filter((transaction) => transaction.taskId === taskId && transaction.status === "completed")
+    .reduce((sum, transaction) => {
+      if (transaction.type === "escrow_lock") return sum + transaction.amount;
+      if (transaction.type === "escrow_release" || transaction.type === "escrow_refund") return sum - transaction.amount;
+      return sum;
+    }, 0);
+
+  return Math.round(Math.max(outstanding, 0) * 100) / 100;
 }
 
 async function verifyTelegramJoin(ctx: Context & { from: TelegramFrom }, taskId: string) {
