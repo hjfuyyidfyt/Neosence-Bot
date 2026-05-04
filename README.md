@@ -88,6 +88,9 @@ The health response includes service name, version, environment, start time, and
 - `/unban <userId>` - admin unbans a user
 - `/tickets` - admin lists open support tickets
 - `/closeticket <ticketId>` - admin closes a support ticket
+- `/dispute <submissionId> <reason>` - worker disputes a rejected submission
+- `/disputes` - admin lists open disputes
+- `/resolvedispute <disputeId> pay/uphold` - admin resolves a dispute
 - `/approve <submissionId>` - approve proof
 - `/reject <submissionId> <reason>` - reject proof
 - `/paywithdraw <withdrawalId>` - admin marks withdrawal paid
@@ -172,6 +175,10 @@ Admins can ban or unban users. Banned users are blocked from commands, buttons, 
 ## Support Tickets
 
 Users can press `Support` and send a message to create a support ticket. Admins can list tickets with `/tickets` and close them with `/closeticket <ticketId>`.
+
+## Disputes
+
+Workers can dispute rejected submissions with `/dispute <submissionId> <reason>`. Admins can review open disputes from `/admin` or `/disputes`, then either pay the worker or uphold the rejection.
 
 ## Manual Testing
 

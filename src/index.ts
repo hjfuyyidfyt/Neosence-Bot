@@ -6,6 +6,7 @@ import { createStore } from "./store.js";
 import {
   approveSubmission,
   createDepositRequest,
+  createDispute,
   createSubmission,
   createReferral,
   createTask,
@@ -21,7 +22,7 @@ import {
   walletSummary
 } from "./services.js";
 import { formatTask, mainMenu, modeMenu, taskActionButtons, taskButtons } from "./ui.js";
-import type { DepositRequest, Submission, Task, TaskApprovalType, TaskStatus, VerificationType, Withdrawal } from "./types.js";
+import type { DepositRequest, Dispute, Submission, Task, TaskApprovalType, TaskStatus, VerificationType, Withdrawal } from "./types.js";
 
 const store = createStore({ databaseUrl: config.databaseUrl, dataFile: config.dataFile });
 
@@ -204,6 +205,23 @@ bot.command("withdraw", async (ctx) => {
   await ctx.reply(`Withdrawal request pending: ${withdrawal.id}`);
 });
 
+bot.command("dispute", async (ctx) => {
+  const user = await ensureUser(ctx.from);
+  const [, submissionId, ...reasonParts] = ctx.message.text.split(" ");
+  const reason = reasonParts.join(" ").trim();
+  if (!submissionId || !reason) {
+    await ctx.reply("Format: /dispute <submissionId> <reason>");
+    return;
+  }
+
+  try {
+    const dispute = await openDispute(submissionId, user.id, reason);
+    await ctx.reply(`Dispute opened: ${dispute.id}`);
+  } catch (error) {
+    await ctx.reply((error as Error).message);
+  }
+});
+
 bot.command("depositreq", async (ctx) => {
   const user = await ensureUser(ctx.from);
   const [, amountRaw, methodRaw, ...proofParts] = ctx.message.text.split(" ");
@@ -236,6 +254,7 @@ bot.command("admin", async (ctx) => {
   if (!ctx.from || !isAdmin(ctx.from.id)) return;
   const state = store.snapshot();
   const pendingDeposits = state.deposits.filter((item) => item.status === "pending");
+  const pendingDisputes = state.disputes.filter((item) => item.status === "open");
   const pendingSubmissions = state.submissions.filter((item) => item.status === "pending");
   const pendingWithdrawals = state.withdrawals.filter((item) => item.status === "pending");
   await ctx.reply([
@@ -243,6 +262,7 @@ bot.command("admin", async (ctx) => {
     `Users: ${state.users.length}`,
     `Tasks: ${state.tasks.length}`,
     `Pending deposits: ${pendingDeposits.length}`,
+    `Pending disputes: ${pendingDisputes.length}`,
     `Pending submissions: ${pendingSubmissions.length}`,
     `Pending withdrawals: ${pendingWithdrawals.length}`,
     "",
@@ -257,11 +277,36 @@ bot.command("admin", async (ctx) => {
     "/unban <userId>",
     "/tickets",
     "/closeticket <ticketId>",
+    "/disputes",
+    "/resolvedispute <disputeId> pay/uphold",
     "/approve <submissionId>",
     "/reject <submissionId> <reason>",
     "/paywithdraw <withdrawalId>",
     "/rejectwithdraw <withdrawalId> <reason>"
-  ].join("\n"), adminReviewKeyboard(pendingDeposits, pendingSubmissions, pendingWithdrawals));
+  ].join("\n"), adminReviewKeyboard(pendingDeposits, pendingDisputes, pendingSubmissions, pendingWithdrawals));
+});
+
+bot.command("disputes", async (ctx) => {
+  if (!ctx.from || !isAdmin(ctx.from.id)) return;
+  await ctx.reply(formatOpenDisputes(), disputeListKeyboard(store.snapshot().disputes.filter((item) => item.status === "open")));
+});
+
+bot.command("resolvedispute", async (ctx) => {
+  if (!ctx.from || !isAdmin(ctx.from.id)) return;
+  const [, disputeId, resolution] = ctx.message.text.split(" ");
+  if (!disputeId || !["pay", "uphold"].includes(resolution)) {
+    await ctx.reply("Format: /resolvedispute <disputeId> pay/uphold");
+    return;
+  }
+
+  try {
+    const dispute = resolution === "pay"
+      ? await resolveDisputePayWorker(disputeId)
+      : await resolveDisputeUphold(disputeId);
+    await ctx.reply(`Dispute resolved: ${dispute.id} (${dispute.status})`);
+  } catch (error) {
+    await ctx.reply((error as Error).message);
+  }
 });
 
 bot.command("tickets", async (ctx) => {
@@ -750,6 +795,36 @@ bot.action(/^deposit:reject:(.+)$/, async (ctx) => {
   }
 });
 
+bot.action(/^dispute:pay:(.+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!isAdmin(ctx.from.id)) {
+    await ctx.reply("Admin permission required.");
+    return;
+  }
+
+  try {
+    const dispute = await resolveDisputePayWorker(ctx.match[1]);
+    await ctx.reply(`Dispute resolved. Worker paid for ${dispute.submissionId}.`);
+  } catch (error) {
+    await ctx.reply((error as Error).message);
+  }
+});
+
+bot.action(/^dispute:uphold:(.+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!isAdmin(ctx.from.id)) {
+    await ctx.reply("Admin permission required.");
+    return;
+  }
+
+  try {
+    const dispute = await resolveDisputeUphold(ctx.match[1]);
+    await ctx.reply(`Dispute resolved. Rejection upheld for ${dispute.submissionId}.`);
+  } catch (error) {
+    await ctx.reply((error as Error).message);
+  }
+});
+
 bot.action(/^withdrawal:reject:(.+)$/, async (ctx) => {
   await ctx.answerCbQuery();
   if (!isAdmin(ctx.from.id)) {
@@ -1212,11 +1287,15 @@ function extractText(message: unknown): string | undefined {
   return textMessage.text?.trim();
 }
 
-function adminReviewKeyboard(deposits: DepositRequest[], submissions: Submission[], withdrawals: Withdrawal[]) {
+function adminReviewKeyboard(deposits: DepositRequest[], disputes: Dispute[], submissions: Submission[], withdrawals: Withdrawal[]) {
   const rows = [
     ...deposits.slice(0, 5).map((deposit) => [
       Markup.button.callback(`Approve dep ${shortId(deposit.id)} - ${deposit.amount} BDT`, `deposit:approve:${deposit.id}`),
       Markup.button.callback(`Reject dep ${shortId(deposit.id)}`, `deposit:reject:${deposit.id}`)
+    ]),
+    ...disputes.slice(0, 5).map((dispute) => [
+      Markup.button.callback(`Pay dispute ${shortId(dispute.id)}`, `dispute:pay:${dispute.id}`),
+      Markup.button.callback(`Uphold ${shortId(dispute.id)}`, `dispute:uphold:${dispute.id}`)
     ]),
     ...submissions.slice(0, 5).map((submission) => [
       Markup.button.callback(`Review ${shortId(submission.id)}`, `submission:view:${submission.id}`)
@@ -1232,6 +1311,36 @@ function adminReviewKeyboard(deposits: DepositRequest[], submissions: Submission
   }
 
   return Markup.inlineKeyboard(rows);
+}
+
+function disputeListKeyboard(disputes: Dispute[]) {
+  if (disputes.length === 0) {
+    return Markup.inlineKeyboard([[Markup.button.callback("No open disputes", "noop")]]);
+  }
+
+  return Markup.inlineKeyboard(
+    disputes.slice(0, 10).map((dispute) => [
+      Markup.button.callback(`Pay ${shortId(dispute.id)}`, `dispute:pay:${dispute.id}`),
+      Markup.button.callback(`Uphold ${shortId(dispute.id)}`, `dispute:uphold:${dispute.id}`)
+    ])
+  );
+}
+
+function formatOpenDisputes(): string {
+  const disputes = store.snapshot().disputes.filter((dispute) => dispute.status === "open");
+  if (disputes.length === 0) return "No open disputes.";
+
+  return [
+    `Open disputes: ${disputes.length}`,
+    "",
+    ...disputes.slice(0, 10).map((dispute) => [
+      `Dispute: ${dispute.id}`,
+      `Submission: ${dispute.submissionId}`,
+      `Worker: ${dispute.workerId}`,
+      `Buyer: ${dispute.buyerId}`,
+      `Reason: ${dispute.reason}`
+    ].join("\n"))
+  ].join("\n\n");
 }
 
 function buyerSubmissionKeyboard(submissions: Submission[]) {
@@ -1369,6 +1478,92 @@ async function rejectDepositById(depositId: string, reason: string) {
     note: reason
   }));
   return rejectedDeposit;
+}
+
+async function openDispute(submissionId: string, workerId: number, reason: string) {
+  const state = store.snapshot();
+  const submission = state.submissions.find((item) => item.id === submissionId);
+  if (!submission) throw new Error("Submission not found.");
+  if (submission.workerId !== workerId) throw new Error("Ei submission-er worker apni na.");
+  if (submission.status !== "rejected") throw new Error("Only rejected submissions can be disputed.");
+
+  const task = state.tasks.find((item) => item.id === submission.taskId);
+  if (!task) throw new Error("Task not found.");
+
+  const alreadyOpen = state.disputes.some(
+    (dispute) => dispute.submissionId === submission.id && dispute.status === "open"
+  );
+  if (alreadyOpen) throw new Error("Ei submission-er dispute already open ache.");
+
+  const dispute = createDispute({ submission, task, reason });
+  await store.addDispute(dispute);
+  return dispute;
+}
+
+async function resolveDisputePayWorker(disputeId: string) {
+  const state = store.snapshot();
+  const dispute = state.disputes.find((item) => item.id === disputeId);
+  if (!dispute) throw new Error("Dispute not found.");
+  if (dispute.status !== "open") throw new Error(`Dispute already ${dispute.status}.`);
+
+  const submission = state.submissions.find((item) => item.id === dispute.submissionId);
+  if (!submission) throw new Error("Submission not found.");
+  if (submission.status !== "rejected") throw new Error(`Submission is ${submission.status}, cannot dispute-pay.`);
+
+  const task = state.tasks.find((item) => item.id === submission.taskId);
+  if (!task) throw new Error("Task not found.");
+
+  const approvedSubmission: Submission = {
+    ...submission,
+    status: "approved",
+    reviewedAt: new Date().toISOString()
+  };
+  const updatedTask: Task = {
+    ...task,
+    completedCount: task.completedCount + 1,
+    status: task.completedCount + 1 >= task.workerLimit ? "completed" : task.status,
+    updatedAt: new Date().toISOString()
+  };
+  const resolvedDispute: Dispute = {
+    ...dispute,
+    status: "worker_paid",
+    resolvedAt: new Date().toISOString()
+  };
+
+  await store.updateSubmission(approvedSubmission);
+  await store.updateTask(updatedTask);
+  await store.updateDispute(resolvedDispute);
+  await store.addTransaction(createTransaction({
+    userId: submission.workerId,
+    type: "earn",
+    amount: submission.rewardAmount,
+    taskId: task.id,
+    submissionId: submission.id,
+    note: `Dispute resolved in worker favor: ${dispute.id}`
+  }));
+  await store.addTransaction(createTransaction({
+    userId: task.buyerId,
+    type: "escrow_release",
+    amount: submission.rewardAmount,
+    taskId: task.id,
+    submissionId: submission.id,
+    note: `Dispute payout: ${dispute.id}`
+  }));
+  return resolvedDispute;
+}
+
+async function resolveDisputeUphold(disputeId: string) {
+  const dispute = store.snapshot().disputes.find((item) => item.id === disputeId);
+  if (!dispute) throw new Error("Dispute not found.");
+  if (dispute.status !== "open") throw new Error(`Dispute already ${dispute.status}.`);
+
+  const resolvedDispute: Dispute = {
+    ...dispute,
+    status: "rejection_upheld",
+    resolvedAt: new Date().toISOString()
+  };
+  await store.updateDispute(resolvedDispute);
+  return resolvedDispute;
 }
 
 async function rejectWithdrawalById(withdrawalId: string, reason: string) {

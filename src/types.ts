@@ -129,6 +129,18 @@ export interface SupportTicket {
   closedAt?: string;
 }
 
+export interface Dispute {
+  id: string;
+  submissionId: string;
+  taskId: string;
+  workerId: number;
+  buyerId: number;
+  reason: string;
+  status: "open" | "worker_paid" | "rejection_upheld";
+  createdAt: string;
+  resolvedAt?: string;
+}
+
 export interface StoreState {
   users: UserProfile[];
   tasks: Task[];
@@ -139,4 +151,5 @@ export interface StoreState {
   verificationEvents: VerificationEvent[];
   referrals: Referral[];
   supportTickets: SupportTicket[];
+  disputes: Dispute[];
 }

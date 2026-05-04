@@ -1,6 +1,7 @@
 import { config } from "./config.js";
 import type {
   DepositRequest,
+  Dispute,
   StoreState,
   Referral,
   Submission,
@@ -186,6 +187,23 @@ export function createSupportTicket(userId: number, message: string): SupportTic
     id: id("ticket"),
     userId,
     message,
+    status: "open",
+    createdAt: now()
+  };
+}
+
+export function createDispute(input: {
+  submission: Submission;
+  task: Task;
+  reason: string;
+}): Dispute {
+  return {
+    id: id("disp"),
+    submissionId: input.submission.id,
+    taskId: input.task.id,
+    workerId: input.submission.workerId,
+    buyerId: input.task.buyerId,
+    reason: input.reason,
     status: "open",
     createdAt: now()
   };

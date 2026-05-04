@@ -47,6 +47,9 @@ Use this after Railway is serving the latest commit.
 - Buyer can view proof.
 - Buyer can approve proof and worker receives reward.
 - Buyer can reject proof.
+- Worker can dispute rejected proof with `/dispute <submissionId> <reason>`.
+- Admin `/disputes` lists open disputes.
+- Admin resolves dispute as worker-paid or rejection-upheld.
 - Admin `/admin` shows pending submissions and withdrawals.
 - Admin quick buttons approve/reject submissions.
 

@@ -3,6 +3,7 @@ import { dirname } from "node:path";
 import pg from "pg";
 import type {
   DepositRequest,
+  Dispute,
   StoreState,
   Referral,
   Submission,
@@ -25,7 +26,8 @@ const emptyState = (): StoreState => ({
   withdrawals: [],
   verificationEvents: [],
   referrals: [],
-  supportTickets: []
+  supportTickets: [],
+  disputes: []
 });
 
 export interface NeosenceStore {
@@ -45,6 +47,8 @@ export interface NeosenceStore {
   addVerificationEvent(event: VerificationEvent): Promise<void>;
   addSupportTicket(ticket: SupportTicket): Promise<void>;
   updateSupportTicket(ticket: SupportTicket): Promise<void>;
+  addDispute(dispute: Dispute): Promise<void>;
+  updateDispute(dispute: Dispute): Promise<void>;
 }
 
 abstract class CachedStore implements NeosenceStore {
@@ -137,6 +141,18 @@ abstract class CachedStore implements NeosenceStore {
     const index = this.state.supportTickets.findIndex((item) => item.id === ticket.id);
     if (index < 0) throw new Error(`Support ticket not found: ${ticket.id}`);
     this.state.supportTickets[index] = ticket;
+    await this.save();
+  }
+
+  async addDispute(dispute: Dispute): Promise<void> {
+    this.state.disputes.push(dispute);
+    await this.save();
+  }
+
+  async updateDispute(dispute: Dispute): Promise<void> {
+    const index = this.state.disputes.findIndex((item) => item.id === dispute.id);
+    if (index < 0) throw new Error(`Dispute not found: ${dispute.id}`);
+    this.state.disputes[index] = dispute;
     await this.save();
   }
 }
