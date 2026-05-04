@@ -5,6 +5,7 @@ import { runtime } from "./runtime.js";
 import { createStore } from "./store.js";
 import {
   approveSubmission,
+  createDepositRequest,
   createSubmission,
   createReferral,
   createTask,
@@ -20,7 +21,7 @@ import {
   walletSummary
 } from "./services.js";
 import { formatTask, mainMenu, modeMenu, taskActionButtons, taskButtons } from "./ui.js";
-import type { Submission, Task, TaskApprovalType, TaskStatus, VerificationType, Withdrawal } from "./types.js";
+import type { DepositRequest, Submission, Task, TaskApprovalType, TaskStatus, VerificationType, Withdrawal } from "./types.js";
 
 const store = createStore({ databaseUrl: config.databaseUrl, dataFile: config.dataFile });
 
@@ -203,15 +204,45 @@ bot.command("withdraw", async (ctx) => {
   await ctx.reply(`Withdrawal request pending: ${withdrawal.id}`);
 });
 
+bot.command("depositreq", async (ctx) => {
+  const user = await ensureUser(ctx.from);
+  const [, amountRaw, methodRaw, ...proofParts] = ctx.message.text.split(" ");
+  const amount = Number(amountRaw);
+  const method = methodRaw?.trim();
+  const proof = proofParts.join(" ").trim();
+
+  if (!Number.isFinite(amount) || amount <= 0 || !method || !proof) {
+    await ctx.reply("Format: /depositreq 500 bkash trxid-or-proof-note");
+    return;
+  }
+
+  const deposit = createDepositRequest({
+    userId: user.id,
+    amount,
+    method,
+    proof
+  });
+  await store.addDeposit(deposit);
+  await store.addTransaction(createTransaction({
+    userId: user.id,
+    type: "deposit_request",
+    amount,
+    note: `${method}: ${proof}`
+  }));
+  await ctx.reply(`Deposit request submitted: ${deposit.id}\nAmount: ${deposit.amount} BDT\nStatus: ${deposit.status}`);
+});
+
 bot.command("admin", async (ctx) => {
   if (!ctx.from || !isAdmin(ctx.from.id)) return;
   const state = store.snapshot();
+  const pendingDeposits = state.deposits.filter((item) => item.status === "pending");
   const pendingSubmissions = state.submissions.filter((item) => item.status === "pending");
   const pendingWithdrawals = state.withdrawals.filter((item) => item.status === "pending");
   await ctx.reply([
     "Neosence Admin",
     `Users: ${state.users.length}`,
     `Tasks: ${state.tasks.length}`,
+    `Pending deposits: ${pendingDeposits.length}`,
     `Pending submissions: ${pendingSubmissions.length}`,
     `Pending withdrawals: ${pendingWithdrawals.length}`,
     "",
@@ -219,6 +250,8 @@ bot.command("admin", async (ctx) => {
     "",
     "Commands:",
     "/deposit <userId> <amount> <note>",
+    "/approvedeposit <depositId>",
+    "/rejectdeposit <depositId> <reason>",
     "/user <userId>",
     "/ban <userId>",
     "/unban <userId>",
@@ -228,7 +261,7 @@ bot.command("admin", async (ctx) => {
     "/reject <submissionId> <reason>",
     "/paywithdraw <withdrawalId>",
     "/rejectwithdraw <withdrawalId> <reason>"
-  ].join("\n"), adminReviewKeyboard(pendingSubmissions, pendingWithdrawals));
+  ].join("\n"), adminReviewKeyboard(pendingDeposits, pendingSubmissions, pendingWithdrawals));
 });
 
 bot.command("tickets", async (ctx) => {
@@ -317,6 +350,39 @@ bot.command("deposit", async (ctx) => {
     note
   }));
   await ctx.reply(`Deposited ${amount} BDT to user ${userId}.`);
+});
+
+bot.command("approvedeposit", async (ctx) => {
+  if (!ctx.from || !isAdmin(ctx.from.id)) return;
+  const [, depositId] = ctx.message.text.split(" ");
+  if (!depositId) {
+    await ctx.reply("Format: /approvedeposit <depositId>");
+    return;
+  }
+
+  try {
+    const deposit = await approveDepositById(depositId);
+    await ctx.reply(`Deposit approved: ${deposit.id}\nUser ${deposit.userId} received ${deposit.amount} BDT.`);
+  } catch (error) {
+    await ctx.reply((error as Error).message);
+  }
+});
+
+bot.command("rejectdeposit", async (ctx) => {
+  if (!ctx.from || !isAdmin(ctx.from.id)) return;
+  const [, depositId, ...reasonParts] = ctx.message.text.split(" ");
+  const reason = reasonParts.join(" ").trim() || "Rejected by admin";
+  if (!depositId) {
+    await ctx.reply("Format: /rejectdeposit <depositId> <reason>");
+    return;
+  }
+
+  try {
+    const deposit = await rejectDepositById(depositId, reason);
+    await ctx.reply(`Deposit rejected: ${deposit.id}`);
+  } catch (error) {
+    await ctx.reply((error as Error).message);
+  }
 });
 
 bot.command("approve", async (ctx) => {
@@ -654,6 +720,36 @@ bot.action(/^withdrawal:pay:(.+)$/, async (ctx) => {
   }
 });
 
+bot.action(/^deposit:approve:(.+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!isAdmin(ctx.from.id)) {
+    await ctx.reply("Admin permission required.");
+    return;
+  }
+
+  try {
+    const deposit = await approveDepositById(ctx.match[1]);
+    await ctx.reply(`Deposit approved. User ${deposit.userId} received ${deposit.amount} BDT.`);
+  } catch (error) {
+    await ctx.reply((error as Error).message);
+  }
+});
+
+bot.action(/^deposit:reject:(.+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!isAdmin(ctx.from.id)) {
+    await ctx.reply("Admin permission required.");
+    return;
+  }
+
+  try {
+    const deposit = await rejectDepositById(ctx.match[1], "Rejected by admin");
+    await ctx.reply(`Deposit rejected: ${deposit.id}`);
+  } catch (error) {
+    await ctx.reply((error as Error).message);
+  }
+});
+
 bot.action(/^withdrawal:reject:(.+)$/, async (ctx) => {
   await ctx.answerCbQuery();
   if (!isAdmin(ctx.from.id)) {
@@ -790,9 +886,8 @@ function formatWallet(userId: number, mode: "freelancer" | "buyer"): string {
       ...common,
       "",
       "Deposit:",
-      "Send payment to admin, then share your User ID and amount.",
-      "Admin command after payment confirmation:",
-      `/deposit ${userId} <amount> buyer deposit`
+      "Send payment to admin/payment number, then submit request:",
+      "/depositreq 500 bkash trxid-or-proof-note"
     ].join("\n");
   }
 
@@ -827,6 +922,7 @@ function formatUserLookup(userId: number): string {
   const buyerTasks = state.tasks.filter((task) => task.buyerId === userId);
   const submissions = state.submissions.filter((submission) => submission.workerId === userId);
   const withdrawals = state.withdrawals.filter((withdrawal) => withdrawal.userId === userId);
+  const deposits = state.deposits.filter((deposit) => deposit.userId === userId);
   const referrals = state.referrals.filter((referral) => referral.referrerId === userId);
 
   return [
@@ -845,6 +941,7 @@ function formatUserLookup(userId: number): string {
     "",
     `Buyer campaigns: ${buyerTasks.length}`,
     `Worker submissions: ${submissions.length}`,
+    `Deposits: ${deposits.length}`,
     `Withdrawals: ${withdrawals.length}`,
     `Referrals: ${referrals.length}`
   ].join("\n");
@@ -1114,8 +1211,12 @@ function extractText(message: unknown): string | undefined {
   return textMessage.text?.trim();
 }
 
-function adminReviewKeyboard(submissions: Submission[], withdrawals: Withdrawal[]) {
+function adminReviewKeyboard(deposits: DepositRequest[], submissions: Submission[], withdrawals: Withdrawal[]) {
   const rows = [
+    ...deposits.slice(0, 5).map((deposit) => [
+      Markup.button.callback(`Approve dep ${shortId(deposit.id)} - ${deposit.amount} BDT`, `deposit:approve:${deposit.id}`),
+      Markup.button.callback(`Reject dep ${shortId(deposit.id)}`, `deposit:reject:${deposit.id}`)
+    ]),
     ...submissions.slice(0, 5).map((submission) => [
       Markup.button.callback(`Review ${shortId(submission.id)}`, `submission:view:${submission.id}`)
     ]),
@@ -1226,6 +1327,47 @@ async function payWithdrawalById(withdrawalId: string) {
     note: withdrawal.method
   }));
   return paidWithdrawal;
+}
+
+async function approveDepositById(depositId: string) {
+  const deposit = store.snapshot().deposits.find((item) => item.id === depositId);
+  if (!deposit) throw new Error("Deposit request not found.");
+  if (deposit.status !== "pending") throw new Error(`Deposit already ${deposit.status}.`);
+
+  const approvedDeposit: DepositRequest = {
+    ...deposit,
+    status: "approved",
+    reviewedAt: new Date().toISOString()
+  };
+  await store.updateDeposit(approvedDeposit);
+  await store.addTransaction(createTransaction({
+    userId: deposit.userId,
+    type: "deposit",
+    amount: deposit.amount,
+    note: `${deposit.method}: ${deposit.proof ?? "approved deposit request"}`
+  }));
+  return approvedDeposit;
+}
+
+async function rejectDepositById(depositId: string, reason: string) {
+  const deposit = store.snapshot().deposits.find((item) => item.id === depositId);
+  if (!deposit) throw new Error("Deposit request not found.");
+  if (deposit.status !== "pending") throw new Error(`Deposit already ${deposit.status}.`);
+
+  const rejectedDeposit: DepositRequest = {
+    ...deposit,
+    status: "rejected",
+    reviewedAt: new Date().toISOString()
+  };
+  await store.updateDeposit(rejectedDeposit);
+  await store.addTransaction(createTransaction({
+    userId: deposit.userId,
+    type: "deposit_rejected",
+    amount: deposit.amount,
+    status: "rejected",
+    note: reason
+  }));
+  return rejectedDeposit;
 }
 
 async function rejectWithdrawalById(withdrawalId: string, reason: string) {

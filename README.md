@@ -79,7 +79,10 @@ The health response includes service name, version, environment, start time, and
 - `/wallet` - wallet summary
 - `/withdraw 100 bkash:01XXXXXXXXX` - request withdrawal
 - `/admin` - admin dashboard
+- `/depositreq 500 bkash trxid-or-proof-note` - user submits deposit request
 - `/deposit <userId> <amount> <note>` - admin adds buyer/freelancer balance
+- `/approvedeposit <depositId>` - admin approves deposit request
+- `/rejectdeposit <depositId> <reason>` - admin rejects deposit request
 - `/user <userId>` - admin user lookup with wallet and activity summary
 - `/ban <userId>` - admin bans a user
 - `/unban <userId>` - admin unbans a user
@@ -150,7 +153,11 @@ Buyers can open `My Campaigns` to view campaign status and stats. Active campaig
 
 ## Wallet UX
 
-Wallet text changes by mode. Freelancer mode highlights withdrawable balance and `/withdraw`; buyer mode highlights User ID and manual deposit instructions for admin-confirmed deposits.
+Wallet text changes by mode. Freelancer mode highlights withdrawable balance and `/withdraw`; buyer mode highlights User ID and `/depositreq` for admin-reviewed deposits.
+
+## Deposit Requests
+
+Users submit deposit requests with `/depositreq <amount> <method> <proof>`. Admins can approve or reject deposit requests from `/admin` quick buttons or command fallbacks. Approved deposits add wallet balance.
 
 ## Referrals
 

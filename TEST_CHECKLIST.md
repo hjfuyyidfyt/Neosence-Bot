@@ -52,7 +52,10 @@ Use this after Railway is serving the latest commit.
 ## Wallet And Payments
 
 - Buyer wallet shows User ID and deposit instruction.
-- Admin `/deposit <userId> <amount> <note>` adds balance.
+- User `/depositreq 500 bkash trxid-or-proof-note` creates deposit request.
+- Admin `/admin` shows pending deposit request.
+- Admin approves deposit request and user balance increases.
+- Admin `/deposit <userId> <amount> <note>` still adds manual balance.
 - Freelancer wallet shows withdrawable amount.
 - `/withdraw 100 bkash:...` creates withdrawal request.
 - Admin `/paywithdraw <withdrawalId>` marks paid.

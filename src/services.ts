@@ -1,5 +1,6 @@
 import { config } from "./config.js";
 import type {
+  DepositRequest,
   StoreState,
   Referral,
   Submission,
@@ -124,6 +125,23 @@ export function createWithdrawal(userId: number, amount: number, method: string)
     userId,
     amount: roundMoney(amount),
     method,
+    status: "pending",
+    createdAt: now()
+  };
+}
+
+export function createDepositRequest(input: {
+  userId: number;
+  amount: number;
+  method: string;
+  proof?: string;
+}): DepositRequest {
+  return {
+    id: id("dep"),
+    userId: input.userId,
+    amount: roundMoney(input.amount),
+    method: input.method,
+    proof: input.proof,
     status: "pending",
     createdAt: now()
   };

@@ -16,6 +16,8 @@ export type SubmissionStatus = "pending" | "approved" | "rejected" | "auto_appro
 
 export type TransactionType =
   | "deposit"
+  | "deposit_request"
+  | "deposit_rejected"
   | "escrow_lock"
   | "escrow_release"
   | "escrow_refund"
@@ -88,6 +90,17 @@ export interface Withdrawal {
   reviewedAt?: string;
 }
 
+export interface DepositRequest {
+  id: string;
+  userId: number;
+  amount: number;
+  method: string;
+  proof?: string;
+  status: "pending" | "approved" | "rejected";
+  createdAt: string;
+  reviewedAt?: string;
+}
+
 export interface VerificationEvent {
   id: string;
   taskId: string;
@@ -121,6 +134,7 @@ export interface StoreState {
   tasks: Task[];
   submissions: Submission[];
   walletTransactions: WalletTransaction[];
+  deposits: DepositRequest[];
   withdrawals: Withdrawal[];
   verificationEvents: VerificationEvent[];
   referrals: Referral[];

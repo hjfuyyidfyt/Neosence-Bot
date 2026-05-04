@@ -2,6 +2,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import pg from "pg";
 import type {
+  DepositRequest,
   StoreState,
   Referral,
   Submission,
@@ -20,6 +21,7 @@ const emptyState = (): StoreState => ({
   tasks: [],
   submissions: [],
   walletTransactions: [],
+  deposits: [],
   withdrawals: [],
   verificationEvents: [],
   referrals: [],
@@ -35,6 +37,8 @@ export interface NeosenceStore {
   addSubmission(submission: Submission): Promise<void>;
   updateSubmission(submission: Submission): Promise<void>;
   addTransaction(transaction: WalletTransaction): Promise<void>;
+  addDeposit(deposit: DepositRequest): Promise<void>;
+  updateDeposit(deposit: DepositRequest): Promise<void>;
   addWithdrawal(withdrawal: Withdrawal): Promise<void>;
   updateWithdrawal(withdrawal: Withdrawal): Promise<void>;
   addReferral(referral: Referral): Promise<void>;
@@ -87,6 +91,18 @@ abstract class CachedStore implements NeosenceStore {
 
   async addTransaction(transaction: WalletTransaction): Promise<void> {
     this.state.walletTransactions.push(transaction);
+    await this.save();
+  }
+
+  async addDeposit(deposit: DepositRequest): Promise<void> {
+    this.state.deposits.push(deposit);
+    await this.save();
+  }
+
+  async updateDeposit(deposit: DepositRequest): Promise<void> {
+    const index = this.state.deposits.findIndex((item) => item.id === deposit.id);
+    if (index < 0) throw new Error(`Deposit request not found: ${deposit.id}`);
+    this.state.deposits[index] = deposit;
     await this.save();
   }
 
