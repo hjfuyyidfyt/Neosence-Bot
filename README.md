@@ -72,7 +72,7 @@ The health response includes service name, version, environment, start time, and
 - `/start` - open main menu
 - `/mode` - switch freelancer/buyer mode
 - `/earn` - browse available tasks
-- `/posttask` - create a task
+- `/posttask` - create a task with the guided buyer wizard
 - `/mytasks` - view owned or accepted tasks
 - `/wallet` - wallet summary
 - `/withdraw 100 bkash:01XXXXXXXXX` - request withdrawal
@@ -106,6 +106,19 @@ Submissions
 Deposit / Balance
 Switch to Freelancer
 Support
+```
+
+`Post Task` starts a guided wizard:
+
+```text
+Title
+Category
+Approval method
+Reward per worker
+Worker limit
+Instructions
+Auto verification type and target, when needed
+Final publish confirmation
 ```
 
 ## Auto Verification Notes

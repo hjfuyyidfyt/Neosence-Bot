@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { Context, Telegraf } from "telegraf";
+import { Context, Markup, Telegraf } from "telegraf";
 import { config, isAdmin } from "./config.js";
 import { runtime } from "./runtime.js";
 import { createStore } from "./store.js";
@@ -38,6 +38,30 @@ await store.load();
 
 const bot = new Telegraf(config.botToken);
 const proofWaiters = new Map<number, string>();
+type TaskDraftStep =
+  | "title"
+  | "category"
+  | "approval"
+  | "reward"
+  | "workers"
+  | "instructions"
+  | "verification"
+  | "target"
+  | "confirm";
+
+interface TaskDraft {
+  step: TaskDraftStep;
+  title?: string;
+  category?: string;
+  approvalType?: TaskApprovalType;
+  rewardPerWorker?: number;
+  workerLimit?: number;
+  instructions?: string;
+  verificationType?: VerificationType;
+  verificationTarget?: string;
+}
+
+const taskDrafts = new Map<number, TaskDraft>();
 
 bot.start(async (ctx) => {
   const user = await ensureUser(ctx.from);
@@ -64,19 +88,15 @@ bot.command("wallet", async (ctx) => {
 
 bot.command("posttask", async (ctx) => {
   const user = await ensureUser(ctx.from);
+  if (user.mode !== "buyer") {
+    await ctx.reply("Task post korte Buyer mode-e switch koro.", mainMenu(user));
+    return;
+  }
+
   const text = ctx.message.text.replace("/posttask", "").trim();
 
   if (!text) {
-    await ctx.reply([
-      "Create task format:",
-      "/posttask title | category | manual/auto | reward | workers | instructions | verification_type(optional) | target(optional)",
-      "",
-      "Example manual:",
-      "/posttask Review our site | website | manual | 5 | 20 | Visit site and submit screenshot",
-      "",
-      "Example auto Telegram:",
-      "/posttask Join channel | telegram | auto | 2 | 100 | Join and press verify | telegram_join | @yourchannel"
-    ].join("\n"));
+    await startTaskWizard(ctx);
     return;
   }
 
@@ -319,7 +339,7 @@ bot.action("menu:post", async (ctx) => {
     await ctx.reply("Task post korte Buyer mode-e switch koro.", mainMenu(user));
     return;
   }
-  await ctx.reply("Use /posttask to create a task. Example format dekhte sudhu /posttask pathao.");
+  await startTaskWizard(ctx);
 });
 
 bot.action("menu:wallet", async (ctx) => {
@@ -385,6 +405,75 @@ bot.action(/^mode:(freelancer|buyer)$/, async (ctx) => {
   await ctx.reply(`Workspace changed: ${formatMode(mode)}`, mainMenu(updatedUser));
 });
 
+bot.action(/^wizard:approval:(manual|auto)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const draft = taskDrafts.get(ctx.from.id);
+  if (!draft) {
+    await ctx.reply("Task draft expired. /posttask diye abar shuru koro.");
+    return;
+  }
+
+  draft.approvalType = ctx.match[1] as TaskApprovalType;
+  draft.step = "reward";
+  taskDrafts.set(ctx.from.id, draft);
+  await ctx.reply("Reward per worker koto BDT? Example: 5");
+});
+
+bot.action(/^wizard:verification:(telegram_join|website_visit|website_webhook|app_attribution|in_app_code|quiz)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const draft = taskDrafts.get(ctx.from.id);
+  if (!draft) {
+    await ctx.reply("Task draft expired. /posttask diye abar shuru koro.");
+    return;
+  }
+
+  draft.verificationType = ctx.match[1] as VerificationType;
+  draft.step = "target";
+  taskDrafts.set(ctx.from.id, draft);
+  await ctx.reply(verificationTargetPrompt(draft.verificationType));
+});
+
+bot.action("wizard:confirm", async (ctx) => {
+  await ctx.answerCbQuery();
+  const user = await ensureUser(ctx.from);
+  const draft = taskDrafts.get(ctx.from.id);
+  if (!draft || !isCompleteDraft(draft)) {
+    await ctx.reply("Task draft incomplete. /posttask diye abar shuru koro.");
+    return;
+  }
+
+  const task = createTask({
+    buyerId: user.id,
+    title: draft.title,
+    category: draft.category,
+    instructions: draft.instructions,
+    rewardPerWorker: draft.rewardPerWorker,
+    workerLimit: draft.workerLimit,
+    approvalType: draft.approvalType,
+    verificationType: draft.verificationType,
+    verificationTarget: draft.verificationTarget
+  });
+
+  await store.addTask(task);
+  await store.addTransaction(createTransaction({
+    userId: user.id,
+    type: "escrow_lock",
+    amount: escrowRequired(task),
+    taskId: task.id,
+    note: "MVP records escrow lock. Connect deposit validation before public launch."
+  }));
+  taskDrafts.delete(ctx.from.id);
+
+  await ctx.reply(`Task live hoye geche.\n\n${formatTask(task)}\n\nEscrow locked: ${escrowRequired(task)} BDT`, mainMenu(user));
+});
+
+bot.action("wizard:cancel", async (ctx) => {
+  await ctx.answerCbQuery();
+  taskDrafts.delete(ctx.from.id);
+  const user = await ensureUser(ctx.from);
+  await ctx.reply("Task draft cancelled.", mainMenu(user));
+});
+
 bot.action(/^task:(.+)$/, async (ctx) => {
   await ctx.answerCbQuery();
   await ensureUser(ctx.from);
@@ -422,6 +511,12 @@ bot.action(/^verify:(.+)$/, async (ctx) => {
 
 bot.on("message", async (ctx, next) => {
   if (!ctx.from) return next();
+  const draft = taskDrafts.get(ctx.from.id);
+  if (draft) {
+    await handleTaskWizardMessage(ctx, draft);
+    return;
+  }
+
   const taskId = proofWaiters.get(ctx.from.id);
   if (!taskId) return next();
 
@@ -475,6 +570,157 @@ function formatWallet(userId: number): string {
 
 function formatMode(mode: "freelancer" | "buyer"): string {
   return mode === "freelancer" ? "Freelancer Mode" : "Buyer Mode";
+}
+
+async function startTaskWizard(ctx: Context & { from: TelegramFrom }) {
+  taskDrafts.set(ctx.from.id, { step: "title" });
+  await ctx.reply("Task title likho. Example: Join our Telegram channel", Markup.inlineKeyboard([
+    [Markup.button.callback("Cancel", "wizard:cancel")]
+  ]));
+}
+
+async function handleTaskWizardMessage(ctx: Context & { from: TelegramFrom; message: unknown }, draft: TaskDraft) {
+  const text = extractText(ctx.message);
+  if (!text) {
+    await ctx.reply("Please text diye answer dao.");
+    return;
+  }
+
+  if (draft.step === "title") {
+    draft.title = text.slice(0, 80);
+    draft.step = "category";
+    taskDrafts.set(ctx.from.id, draft);
+    await ctx.reply("Category likho. Example: telegram, website, app, social, survey");
+    return;
+  }
+
+  if (draft.step === "category") {
+    draft.category = text.slice(0, 40).toLowerCase();
+    draft.step = "approval";
+    taskDrafts.set(ctx.from.id, draft);
+    await ctx.reply("Approval method choose koro:", Markup.inlineKeyboard([
+      [Markup.button.callback("Manual Approval", "wizard:approval:manual")],
+      [Markup.button.callback("Auto Verification", "wizard:approval:auto")],
+      [Markup.button.callback("Cancel", "wizard:cancel")]
+    ]));
+    return;
+  }
+
+  if (draft.step === "reward") {
+    const reward = Number(text);
+    if (!Number.isFinite(reward) || reward <= 0) {
+      await ctx.reply("Valid reward amount dao. Example: 5");
+      return;
+    }
+    draft.rewardPerWorker = reward;
+    draft.step = "workers";
+    taskDrafts.set(ctx.from.id, draft);
+    await ctx.reply("Koto jon worker lagbe? Example: 100");
+    return;
+  }
+
+  if (draft.step === "workers") {
+    const workerLimit = Number(text);
+    if (!Number.isInteger(workerLimit) || workerLimit <= 0) {
+      await ctx.reply("Valid worker count dao. Example: 100");
+      return;
+    }
+    draft.workerLimit = workerLimit;
+    draft.step = "instructions";
+    taskDrafts.set(ctx.from.id, draft);
+    await ctx.reply("Worker-er jonno clear instruction likho.");
+    return;
+  }
+
+  if (draft.step === "instructions") {
+    draft.instructions = text.slice(0, 1200);
+
+    if (draft.approvalType === "auto") {
+      draft.step = "verification";
+      taskDrafts.set(ctx.from.id, draft);
+      await ctx.reply("Auto verification type choose koro:", Markup.inlineKeyboard([
+        [Markup.button.callback("Telegram Join", "wizard:verification:telegram_join")],
+        [Markup.button.callback("Website Visit", "wizard:verification:website_visit")],
+        [Markup.button.callback("Website Webhook", "wizard:verification:website_webhook")],
+        [Markup.button.callback("App Attribution", "wizard:verification:app_attribution")],
+        [Markup.button.callback("In-App Code", "wizard:verification:in_app_code")],
+        [Markup.button.callback("Quiz", "wizard:verification:quiz")],
+        [Markup.button.callback("Cancel", "wizard:cancel")]
+      ]));
+      return;
+    }
+
+    draft.step = "confirm";
+    taskDrafts.set(ctx.from.id, draft);
+    await ctx.reply(formatDraftReview(draft), confirmTaskKeyboard());
+    return;
+  }
+
+  if (draft.step === "target") {
+    draft.verificationTarget = text.slice(0, 300);
+    draft.step = "confirm";
+    taskDrafts.set(ctx.from.id, draft);
+    await ctx.reply(formatDraftReview(draft), confirmTaskKeyboard());
+    return;
+  }
+
+  await ctx.reply("Ei step-er jonno button use koro, ba cancel korte Cancel press koro.");
+}
+
+function confirmTaskKeyboard() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("Publish Task", "wizard:confirm")],
+    [Markup.button.callback("Cancel", "wizard:cancel")]
+  ]);
+}
+
+function formatDraftReview(draft: TaskDraft): string {
+  const rewardTotal = (draft.rewardPerWorker ?? 0) * (draft.workerLimit ?? 0);
+  const fee = rewardTotal * (config.platformFeePercent / 100);
+  return [
+    "Review task before publishing:",
+    "",
+    `Title: ${draft.title}`,
+    `Category: ${draft.category}`,
+    `Approval: ${draft.approvalType}`,
+    `Reward: ${draft.rewardPerWorker} BDT`,
+    `Workers: ${draft.workerLimit}`,
+    `Total escrow: ${Math.round((rewardTotal + fee) * 100) / 100} BDT`,
+    draft.verificationType ? `Verification: ${draft.verificationType}` : undefined,
+    draft.verificationTarget ? `Target: ${draft.verificationTarget}` : undefined,
+    "",
+    "Instructions:",
+    draft.instructions
+  ].filter(Boolean).join("\n");
+}
+
+function verificationTargetPrompt(type: VerificationType): string {
+  if (type === "telegram_join") return "Target channel/group username or chat ID dao. Example: @yourchannel";
+  if (type === "website_visit") return "Tracking target URL dao. Example: https://example.com";
+  if (type === "website_webhook") return "Webhook/event name or target URL dao.";
+  if (type === "app_attribution") return "App/package/deep link target dao.";
+  if (type === "in_app_code") return "Verification code rule or target app info dao.";
+  return "Quiz identifier or question set name dao.";
+}
+
+function isCompleteDraft(draft: TaskDraft): draft is Required<Pick<TaskDraft, "title" | "category" | "approvalType" | "rewardPerWorker" | "workerLimit" | "instructions">> & TaskDraft {
+  const baseComplete = Boolean(
+    draft.title &&
+    draft.category &&
+    draft.approvalType &&
+    draft.rewardPerWorker &&
+    draft.workerLimit &&
+    draft.instructions
+  );
+
+  if (!baseComplete) return false;
+  if (draft.approvalType === "manual") return true;
+  return Boolean(draft.verificationType && draft.verificationTarget);
+}
+
+function extractText(message: unknown): string | undefined {
+  const textMessage = message as { text?: string };
+  return textMessage.text?.trim();
 }
 
 async function verifyTelegramJoin(ctx: Context & { from: TelegramFrom }, taskId: string) {
