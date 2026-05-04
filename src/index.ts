@@ -19,6 +19,20 @@ import { formatTask, mainMenu, modeMenu, taskActionButtons, taskButtons } from "
 import type { TaskApprovalType, VerificationType } from "./types.js";
 
 const store = createStore({ databaseUrl: config.databaseUrl, dataFile: config.dataFile });
+
+createServer((request, response) => {
+  if (request.url === "/health") {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ ok: true, service: "neosence-bot" }));
+    return;
+  }
+
+  response.writeHead(200, { "content-type": "text/plain" });
+  response.end("Neosence Bot is running");
+}).listen(config.port, () => {
+  console.log(`Health server listening on ${config.port}`);
+});
+
 await store.load();
 
 const bot = new Telegraf(config.botToken);
@@ -481,19 +495,6 @@ bot.catch((error) => {
 await bot.launch();
 console.log("Neosence Bot is running");
 console.log(config.databaseUrl ? "Storage: PostgreSQL" : "Storage: local JSON fallback");
-
-createServer((request, response) => {
-  if (request.url === "/health") {
-    response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify({ ok: true, service: "neosence-bot" }));
-    return;
-  }
-
-  response.writeHead(200, { "content-type": "text/plain" });
-  response.end("Neosence Bot is running");
-}).listen(config.port, () => {
-  console.log(`Health server listening on ${config.port}`);
-});
 
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));
