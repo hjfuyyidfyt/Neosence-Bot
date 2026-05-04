@@ -64,6 +64,21 @@ interface TaskDraft {
 
 const taskDrafts = new Map<number, TaskDraft>();
 
+bot.use(async (ctx, next) => {
+  if (!ctx.from || isAdmin(ctx.from.id)) {
+    await next();
+    return;
+  }
+
+  const user = store.snapshot().users.find((item) => item.id === ctx.from?.id);
+  if (user?.isBanned) {
+    await ctx.reply("Your Neosence account is banned. Contact support if this is a mistake.");
+    return;
+  }
+
+  await next();
+});
+
 bot.start(async (ctx) => {
   const wasExistingUser = store.snapshot().users.some((item) => item.id === ctx.from.id);
   const user = await ensureUser(ctx.from);
@@ -208,11 +223,47 @@ bot.command("admin", async (ctx) => {
     "Commands:",
     "/deposit <userId> <amount> <note>",
     "/user <userId>",
+    "/ban <userId>",
+    "/unban <userId>",
     "/approve <submissionId>",
     "/reject <submissionId> <reason>",
     "/paywithdraw <withdrawalId>",
     "/rejectwithdraw <withdrawalId> <reason>"
   ].join("\n"), adminReviewKeyboard(pendingSubmissions, pendingWithdrawals));
+});
+
+bot.command("ban", async (ctx) => {
+  if (!ctx.from || !isAdmin(ctx.from.id)) return;
+  const [, userIdRaw] = ctx.message.text.split(" ");
+  const userId = Number(userIdRaw);
+  if (!Number.isFinite(userId)) {
+    await ctx.reply("Format: /ban <userId>");
+    return;
+  }
+
+  try {
+    const user = await setUserBanStatus(userId, true);
+    await ctx.reply(`Banned user ${user.id}.`);
+  } catch (error) {
+    await ctx.reply((error as Error).message);
+  }
+});
+
+bot.command("unban", async (ctx) => {
+  if (!ctx.from || !isAdmin(ctx.from.id)) return;
+  const [, userIdRaw] = ctx.message.text.split(" ");
+  const userId = Number(userIdRaw);
+  if (!Number.isFinite(userId)) {
+    await ctx.reply("Format: /unban <userId>");
+    return;
+  }
+
+  try {
+    const user = await setUserBanStatus(userId, false);
+    await ctx.reply(`Unbanned user ${user.id}.`);
+  } catch (error) {
+    await ctx.reply((error as Error).message);
+  }
 });
 
 bot.command("user", async (ctx) => {
@@ -754,6 +805,21 @@ function formatUserLookup(userId: number): string {
     `Withdrawals: ${withdrawals.length}`,
     `Referrals: ${referrals.length}`
   ].join("\n");
+}
+
+async function setUserBanStatus(userId: number, isBanned: boolean) {
+  const user = store.snapshot().users.find((item) => item.id === userId);
+  if (!user) throw new Error("User not found.");
+
+  const updatedUser = {
+    ...user,
+    isBanned,
+    updatedAt: new Date().toISOString()
+  };
+  await store.upsertUser(updatedUser);
+  taskDrafts.delete(userId);
+  proofWaiters.delete(userId);
+  return updatedUser;
 }
 
 function getStartPayload(text: string): string | undefined {

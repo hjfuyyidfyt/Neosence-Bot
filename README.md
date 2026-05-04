@@ -80,6 +80,8 @@ The health response includes service name, version, environment, start time, and
 - `/admin` - admin dashboard
 - `/deposit <userId> <amount> <note>` - admin adds buyer/freelancer balance
 - `/user <userId>` - admin user lookup with wallet and activity summary
+- `/ban <userId>` - admin bans a user
+- `/unban <userId>` - admin unbans a user
 - `/approve <submissionId>` - approve proof
 - `/reject <submissionId> <reason>` - reject proof
 - `/paywithdraw <withdrawalId>` - admin marks withdrawal paid
@@ -146,3 +148,7 @@ Wallet text changes by mode. Freelancer mode highlights withdrawable balance and
 ## Referrals
 
 Freelancers can open `Referrals` to get their invite link. New users who start the bot with `?start=ref_<userId>` are tracked once, self-referrals are ignored, and the referrer receives the configured `REFERRAL_BONUS_BDT`.
+
+## User Safety
+
+Admins can ban or unban users. Banned users are blocked from commands, buttons, task proof submission, and task creation while admins remain able to inspect and manage accounts.
