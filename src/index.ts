@@ -33,6 +33,7 @@ await store.load();
 
 const bot = new Telegraf(config.botToken);
 const proofWaiters = new Map<number, string>();
+const quizWaiters = new Map<number, string>();
 type TaskDraftStep =
   | "title"
   | "category"
@@ -679,11 +680,23 @@ bot.action(/^verify:(.+)$/, async (ctx) => {
     return;
   }
 
+  if (task.verificationType === "quiz") {
+    quizWaiters.set(ctx.from.id, task.id);
+    await ctx.reply("Quiz answer/code pathao. Correct hole instant reward add hobe.");
+    return;
+  }
+
   await ctx.reply("Ei auto verification integration ekhono connected na. MVP te telegram_join ready, website/app webhook layer next step.");
 });
 
 bot.on("message", async (ctx, next) => {
   if (!ctx.from) return next();
+  const quizTaskId = quizWaiters.get(ctx.from.id);
+  if (quizTaskId) {
+    await handleQuizAnswer(ctx, quizTaskId);
+    return;
+  }
+
   const draft = taskDrafts.get(ctx.from.id);
   if (draft) {
     await handleTaskWizardMessage(ctx, draft);
@@ -818,6 +831,7 @@ async function setUserBanStatus(userId: number, isBanned: boolean) {
   await store.upsertUser(updatedUser);
   taskDrafts.delete(userId);
   proofWaiters.delete(userId);
+  quizWaiters.delete(userId);
   return updatedUser;
 }
 
@@ -1002,7 +1016,7 @@ function verificationTargetPrompt(type: VerificationType): string {
   if (type === "website_webhook") return "Webhook/event name or target URL dao.";
   if (type === "app_attribution") return "App/package/deep link target dao.";
   if (type === "in_app_code") return "Verification code rule or target app info dao.";
-  return "Quiz identifier or question set name dao.";
+  return "Correct quiz answer/code dao. Worker same answer dile auto reward pabe.";
 }
 
 function isCompleteDraft(draft: TaskDraft): draft is Required<Pick<TaskDraft, "title" | "category" | "approvalType" | "rewardPerWorker" | "workerLimit" | "instructions">> & TaskDraft {
@@ -1429,7 +1443,61 @@ async function verifyWebsiteVisit(ctx: Context & { from: TelegramFrom }, taskId:
     return;
   }
 
-  const submission = createSubmission(task, ctx.from.id, "website_visit_tracked");
+  await completeAutoTask(task, ctx.from.id, "website_visit_tracked", "Website visit tracked");
+  await ctx.reply(`Website visit verified. ${task.rewardPerWorker} BDT added to your wallet.`);
+}
+
+async function handleQuizAnswer(ctx: Context & { from: TelegramFrom; message: unknown }, taskId: string) {
+  const answer = extractText(ctx.message);
+  if (!answer) {
+    await ctx.reply("Text answer pathao.");
+    return;
+  }
+
+  const task = store.snapshot().tasks.find((item) => item.id === taskId);
+  if (!task || task.verificationType !== "quiz" || !task.verificationTarget) {
+    quizWaiters.delete(ctx.from.id);
+    await ctx.reply("Quiz task not found.");
+    return;
+  }
+
+  if (normalizeAnswer(answer) !== normalizeAnswer(task.verificationTarget)) {
+    await store.addVerificationEvent(createVerificationEvent({
+      taskId: task.id,
+      workerId: ctx.from.id,
+      type: "quiz",
+      status: "failed",
+      metadata: { answer }
+    }));
+    await ctx.reply("Answer match koreni. Instruction check kore abar Verify Now press koro.");
+    quizWaiters.delete(ctx.from.id);
+    return;
+  }
+
+  await store.addVerificationEvent(createVerificationEvent({
+    taskId: task.id,
+    workerId: ctx.from.id,
+    type: "quiz",
+    status: "passed",
+    metadata: { answer: "matched" }
+  }));
+  try {
+    await completeAutoTask(task, ctx.from.id, "quiz_answer_verified", "Quiz answer verified");
+    await ctx.reply(`Quiz verified. ${task.rewardPerWorker} BDT added to your wallet.`);
+  } catch (error) {
+    await ctx.reply((error as Error).message);
+  } finally {
+    quizWaiters.delete(ctx.from.id);
+  }
+}
+
+async function completeAutoTask(task: Task, workerId: number, proof: string, note: string) {
+  const alreadySubmitted = store.snapshot().submissions.some(
+    (submission) => submission.taskId === task.id && submission.workerId === workerId
+  );
+  if (alreadySubmitted) throw new Error("You already submitted this task.");
+
+  const submission = createSubmission(task, workerId, proof);
   const updatedTask = {
     ...task,
     completedCount: task.completedCount + 1,
@@ -1439,12 +1507,12 @@ async function verifyWebsiteVisit(ctx: Context & { from: TelegramFrom }, taskId:
   await store.addSubmission(submission);
   await store.updateTask(updatedTask);
   await store.addTransaction(createTransaction({
-    userId: ctx.from.id,
+    userId: workerId,
     type: "earn",
     amount: task.rewardPerWorker,
     taskId: task.id,
     submissionId: submission.id,
-    note: `Website visit tracked. Withdraw hold target: ${config.autoWithdrawHoldHours}h`
+    note: `${note}. Withdraw hold target: ${config.autoWithdrawHoldHours}h`
   }));
   await store.addTransaction(createTransaction({
     userId: task.buyerId,
@@ -1453,7 +1521,10 @@ async function verifyWebsiteVisit(ctx: Context & { from: TelegramFrom }, taskId:
     taskId: task.id,
     submissionId: submission.id
   }));
-  await ctx.reply(`Website visit verified. ${task.rewardPerWorker} BDT added to your wallet.`);
+}
+
+function normalizeAnswer(answer: string): string {
+  return answer.trim().toLowerCase();
 }
 
 function extractProof(message: unknown): string {

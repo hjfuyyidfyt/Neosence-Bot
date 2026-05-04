@@ -134,6 +134,8 @@ Website and app auto verification are represented in the model as `website_visit
 
 For `website_visit` tasks, Neosence creates a tracking link at `/track/visit`. Set `PUBLIC_URL` in Railway to your public app URL so tracking links point to the deployed service.
 
+For `quiz` tasks, the buyer's verification target is the correct answer/code. Workers press `Verify Now`, submit the answer in Telegram, and receive instant reward when it matches.
+
 ## Review Flow
 
 - Buyers can open `Submissions` in buyer mode and review pending proof with buttons.
