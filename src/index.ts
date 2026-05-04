@@ -1,4 +1,4 @@
-import { createServer } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { Context, Markup, Telegraf } from "telegraf";
 import { config, isAdmin } from "./config.js";
 import { runtime } from "./runtime.js";
@@ -9,6 +9,7 @@ import {
   createReferral,
   createTask,
   createTransaction,
+  createVerificationEvent,
   createWithdrawal,
   escrowRequired,
   getOrCreateUser,
@@ -23,14 +24,7 @@ import type { Submission, Task, TaskApprovalType, TaskStatus, VerificationType, 
 const store = createStore({ databaseUrl: config.databaseUrl, dataFile: config.dataFile });
 
 createServer((request, response) => {
-  if (request.url === "/health") {
-    response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify({ ok: true, ...runtime }));
-    return;
-  }
-
-  response.writeHead(200, { "content-type": "text/plain" });
-  response.end("Neosence Bot is running");
+  void handleHttpRequest(request, response);
 }).listen(config.port, () => {
   console.log(`Health server listening on ${config.port}`);
 });
@@ -680,6 +674,11 @@ bot.action(/^verify:(.+)$/, async (ctx) => {
     return;
   }
 
+  if (task.verificationType === "website_visit") {
+    await verifyWebsiteVisit(ctx, task.id);
+    return;
+  }
+
   await ctx.reply("Ei auto verification integration ekhono connected na. MVP te telegram_join ready, website/app webhook layer next step.");
 });
 
@@ -1287,6 +1286,76 @@ function campaignOutstandingEscrow(taskId: string): number {
   return Math.round(Math.max(outstanding, 0) * 100) / 100;
 }
 
+async function handleHttpRequest(request: IncomingMessage, response: ServerResponse) {
+  const requestUrl = new URL(request.url ?? "/", publicBaseUrl());
+
+  if (requestUrl.pathname === "/health") {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ ok: true, ...runtime }));
+    return;
+  }
+
+  if (requestUrl.pathname === "/track/visit") {
+    await handleWebsiteVisitTrack(request, response, requestUrl);
+    return;
+  }
+
+  response.writeHead(200, { "content-type": "text/plain" });
+  response.end("Neosence Bot is running");
+}
+
+async function handleWebsiteVisitTrack(request: IncomingMessage, response: ServerResponse, requestUrl: URL) {
+  const taskId = requestUrl.searchParams.get("taskId") ?? "";
+  const workerId = Number(requestUrl.searchParams.get("workerId"));
+  const state = store.snapshot();
+  const task = state.tasks.find((item) => item.id === taskId);
+
+  if (!task || task.verificationType !== "website_visit" || !Number.isFinite(workerId)) {
+    response.writeHead(400, { "content-type": "text/plain" });
+    response.end("Invalid Neosence tracking link.");
+    return;
+  }
+
+  const alreadyPassed = state.verificationEvents.some(
+    (event) => event.taskId === taskId && event.workerId === workerId && event.type === "website_visit" && event.status === "passed"
+  );
+
+  if (!alreadyPassed) {
+    await store.addVerificationEvent(createVerificationEvent({
+      taskId,
+      workerId,
+      type: "website_visit",
+      status: "passed",
+      metadata: {
+        ip: request.headers["x-forwarded-for"] ?? request.socket.remoteAddress,
+        userAgent: request.headers["user-agent"] ?? "unknown"
+      }
+    }));
+  }
+
+  if (task.verificationTarget?.startsWith("http://") || task.verificationTarget?.startsWith("https://")) {
+    response.writeHead(302, { location: task.verificationTarget });
+    response.end();
+    return;
+  }
+
+  response.writeHead(200, { "content-type": "text/plain" });
+  response.end("Visit tracked. Return to Telegram and press Verify Now.");
+}
+
+function publicBaseUrl(): string {
+  if (config.publicUrl) return config.publicUrl;
+  if (process.env.RAILWAY_PUBLIC_DOMAIN) return `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`;
+  return `http://localhost:${config.port}`;
+}
+
+function websiteVisitTrackingUrl(taskId: string, workerId: number): string {
+  const url = new URL("/track/visit", publicBaseUrl());
+  url.searchParams.set("taskId", taskId);
+  url.searchParams.set("workerId", String(workerId));
+  return url.toString();
+}
+
 async function verifyTelegramJoin(ctx: Context & { from: TelegramFrom }, taskId: string) {
   const state = store.snapshot();
   const task = state.tasks.find((item) => item.id === taskId);
@@ -1331,6 +1400,60 @@ async function verifyTelegramJoin(ctx: Context & { from: TelegramFrom }, taskId:
   } catch (error) {
     await ctx.reply(`Verification failed. Bot ke target channel/group-e add kora ache kina check koro. ${(error as Error).message}`);
   }
+}
+
+async function verifyWebsiteVisit(ctx: Context & { from: TelegramFrom }, taskId: string) {
+  const state = store.snapshot();
+  const task = state.tasks.find((item) => item.id === taskId);
+  if (!task) {
+    await ctx.reply("Task not found.");
+    return;
+  }
+
+  const alreadySubmitted = state.submissions.some((submission) => submission.taskId === task.id && submission.workerId === ctx.from.id);
+  if (alreadySubmitted) {
+    await ctx.reply("You already submitted this task.");
+    return;
+  }
+
+  const passed = state.verificationEvents.some(
+    (event) => event.taskId === task.id && event.workerId === ctx.from.id && event.type === "website_visit" && event.status === "passed"
+  );
+
+  if (!passed) {
+    await ctx.reply([
+      "Website visit ekhono track hoyni.",
+      "Ei link open koro, tarpor Telegram-e fire Verify Now abar press koro:",
+      websiteVisitTrackingUrl(task.id, ctx.from.id)
+    ].join("\n"));
+    return;
+  }
+
+  const submission = createSubmission(task, ctx.from.id, "website_visit_tracked");
+  const updatedTask = {
+    ...task,
+    completedCount: task.completedCount + 1,
+    status: task.completedCount + 1 >= task.workerLimit ? "completed" as const : task.status,
+    updatedAt: new Date().toISOString()
+  };
+  await store.addSubmission(submission);
+  await store.updateTask(updatedTask);
+  await store.addTransaction(createTransaction({
+    userId: ctx.from.id,
+    type: "earn",
+    amount: task.rewardPerWorker,
+    taskId: task.id,
+    submissionId: submission.id,
+    note: `Website visit tracked. Withdraw hold target: ${config.autoWithdrawHoldHours}h`
+  }));
+  await store.addTransaction(createTransaction({
+    userId: task.buyerId,
+    type: "escrow_release",
+    amount: task.rewardPerWorker,
+    taskId: task.id,
+    submissionId: submission.id
+  }));
+  await ctx.reply(`Website visit verified. ${task.rewardPerWorker} BDT added to your wallet.`);
 }
 
 function extractProof(message: unknown): string {

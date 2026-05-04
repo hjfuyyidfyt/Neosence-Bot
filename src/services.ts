@@ -7,6 +7,7 @@ import type {
   TaskApprovalType,
   UserMode,
   UserProfile,
+  VerificationEvent,
   VerificationType,
   WalletTransaction,
   Withdrawal
@@ -139,6 +140,24 @@ export function createReferral(input: {
     referredUserId: input.referredUserId,
     bonusAmount: roundMoney(input.bonusAmount),
     status: input.status ?? "credited",
+    createdAt: now()
+  };
+}
+
+export function createVerificationEvent(input: {
+  taskId: string;
+  workerId: number;
+  type: VerificationType;
+  status: VerificationEvent["status"];
+  metadata?: Record<string, unknown>;
+}): VerificationEvent {
+  return {
+    id: id("ver"),
+    taskId: input.taskId,
+    workerId: input.workerId,
+    type: input.type,
+    status: input.status,
+    metadata: input.metadata ?? {},
     createdAt: now()
   };
 }

@@ -7,6 +7,7 @@ import type {
   Submission,
   Task,
   UserProfile,
+  VerificationEvent,
   WalletTransaction,
   Withdrawal
 } from "./types.js";
@@ -35,6 +36,7 @@ export interface NeosenceStore {
   addWithdrawal(withdrawal: Withdrawal): Promise<void>;
   updateWithdrawal(withdrawal: Withdrawal): Promise<void>;
   addReferral(referral: Referral): Promise<void>;
+  addVerificationEvent(event: VerificationEvent): Promise<void>;
 }
 
 abstract class CachedStore implements NeosenceStore {
@@ -98,6 +100,11 @@ abstract class CachedStore implements NeosenceStore {
 
   async addReferral(referral: Referral): Promise<void> {
     this.state.referrals.push(referral);
+    await this.save();
+  }
+
+  async addVerificationEvent(event: VerificationEvent): Promise<void> {
+    this.state.verificationEvents.push(event);
     await this.save();
   }
 }

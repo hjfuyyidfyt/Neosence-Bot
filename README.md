@@ -44,6 +44,7 @@ Required Railway variables:
 BOT_TOKEN=your_telegram_bot_token
 ADMIN_IDS=your_telegram_user_id
 DATABASE_URL=your_postgres_connection_string
+PUBLIC_URL=https://your-app.up.railway.app
 PLATFORM_FEE_PERCENT=15
 AUTO_WITHDRAW_HOLD_HOURS=24
 REFERRAL_BONUS_BDT=1
@@ -130,6 +131,8 @@ Final publish confirmation
 For Telegram channel/group join tasks, add the bot to the target channel or group so it can call `getChatMember`. Use the target chat ID or public `@username` as the verification target.
 
 Website and app auto verification are represented in the model as `website_visit`, `website_webhook`, `app_attribution`, and `in_app_code`; integrations can be added behind the same verification event system.
+
+For `website_visit` tasks, Neosence creates a tracking link at `/track/visit`. Set `PUBLIC_URL` in Railway to your public app URL so tracking links point to the deployed service.
 
 ## Review Flow
 
