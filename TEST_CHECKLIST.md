@@ -35,6 +35,7 @@ Use this after Railway is serving the latest commit.
 - Freelancer sees available tasks in `Earn Money`.
 - Freelancer cannot see own buyer task.
 - Manual task accepts proof and creates pending submission.
+- Screenshot/document proof stores Telegram file reference for review.
 - Telegram join task verifies membership and pays reward.
 - Website visit task gives tracking link, tracks visit, then pays reward.
 - Quiz task accepts correct answer and pays reward.

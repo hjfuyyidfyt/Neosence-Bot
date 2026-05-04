@@ -1746,11 +1746,24 @@ function normalizeAnswer(answer: string): string {
 }
 
 function extractProof(message: unknown): string {
-  const proofMessage = message as { text?: string; caption?: string; photo?: unknown[]; document?: { file_id: string } };
+  const proofMessage = message as {
+    text?: string;
+    caption?: string;
+    photo?: Array<{ file_id: string; file_unique_id?: string; width?: number; height?: number; file_size?: number }>;
+    document?: { file_id: string; file_name?: string; mime_type?: string; file_size?: number };
+  };
   if (proofMessage.text) return proofMessage.text;
+  if (proofMessage.photo?.length) {
+    const bestPhoto = proofMessage.photo[proofMessage.photo.length - 1];
+    const caption = proofMessage.caption ? ` caption="${proofMessage.caption}"` : "";
+    return `photo:${bestPhoto.file_id}${caption}`;
+  }
+  if (proofMessage.document?.file_id) {
+    const fileName = proofMessage.document.file_name ? ` name="${proofMessage.document.file_name}"` : "";
+    const caption = proofMessage.caption ? ` caption="${proofMessage.caption}"` : "";
+    return `document:${proofMessage.document.file_id}${fileName}${caption}`;
+  }
   if (proofMessage.caption) return proofMessage.caption;
-  if (proofMessage.photo?.length) return "photo_proof";
-  if (proofMessage.document?.file_id) return `document:${proofMessage.document.file_id}`;
   return "proof_received";
 }
 
