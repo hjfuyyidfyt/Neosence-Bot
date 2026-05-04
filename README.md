@@ -78,6 +78,7 @@ The health response includes service name, version, environment, start time, and
 - `/withdraw 100 bkash:01XXXXXXXXX` - request withdrawal
 - `/admin` - admin dashboard
 - `/deposit <userId> <amount> <note>` - admin adds buyer/freelancer balance
+- `/user <userId>` - admin user lookup with wallet and activity summary
 - `/approve <submissionId>` - approve proof
 - `/reject <submissionId> <reason>` - reject proof
 - `/paywithdraw <withdrawalId>` - admin marks withdrawal paid
@@ -136,3 +137,7 @@ Website and app auto verification are represented in the model as `website_visit
 ## Campaign Controls
 
 Buyers can open `My Campaigns` to view campaign status and stats. Active campaigns can be paused, paused campaigns can be resumed, and active/paused campaigns can be cancelled after pending submissions are reviewed. Cancelling refunds outstanding escrow back to the buyer wallet.
+
+## Wallet UX
+
+Wallet text changes by mode. Freelancer mode highlights withdrawable balance and `/withdraw`; buyer mode highlights User ID and manual deposit instructions for admin-confirmed deposits.

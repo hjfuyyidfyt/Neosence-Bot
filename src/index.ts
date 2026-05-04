@@ -83,7 +83,7 @@ bot.command("earn", async (ctx) => {
 
 bot.command("wallet", async (ctx) => {
   const user = await ensureUser(ctx.from);
-  await ctx.reply(formatWallet(user.id));
+  await ctx.reply(formatWallet(user.id, user.mode));
 });
 
 bot.command("posttask", async (ctx) => {
@@ -199,11 +199,24 @@ bot.command("admin", async (ctx) => {
     "",
     "Commands:",
     "/deposit <userId> <amount> <note>",
+    "/user <userId>",
     "/approve <submissionId>",
     "/reject <submissionId> <reason>",
     "/paywithdraw <withdrawalId>",
     "/rejectwithdraw <withdrawalId> <reason>"
   ].join("\n"), adminReviewKeyboard(pendingSubmissions, pendingWithdrawals));
+});
+
+bot.command("user", async (ctx) => {
+  if (!ctx.from || !isAdmin(ctx.from.id)) return;
+  const [, userIdRaw] = ctx.message.text.split(" ");
+  const userId = Number(userIdRaw);
+  if (!Number.isFinite(userId)) {
+    await ctx.reply("Format: /user <userId>");
+    return;
+  }
+
+  await ctx.reply(formatUserLookup(userId));
 });
 
 bot.command("deposit", async (ctx) => {
@@ -311,8 +324,8 @@ bot.action("menu:post", async (ctx) => {
 
 bot.action("menu:wallet", async (ctx) => {
   await ctx.answerCbQuery();
-  await ensureUser(ctx.from);
-  await ctx.reply(formatWallet(ctx.from.id));
+  const user = await ensureUser(ctx.from);
+  await ctx.reply(formatWallet(user.id, user.mode));
 });
 
 bot.action("menu:mode", async (ctx) => {
@@ -358,7 +371,8 @@ bot.action("menu:submissions", async (ctx) => {
 
 bot.action("menu:withdraw", async (ctx) => {
   await ctx.answerCbQuery();
-  await ctx.reply("Withdraw request format: /withdraw 100 bkash:01XXXXXXXXX");
+  const user = await ensureUser(ctx.from);
+  await ctx.reply(formatWithdrawHelp(user.id));
 });
 
 bot.action("menu:referrals", async (ctx) => {
@@ -657,19 +671,78 @@ async function showEarn(ctx: Context & { from: TelegramFrom }) {
   await ctx.reply("Available Neosence tasks:", taskButtons(tasks));
 }
 
-function formatWallet(userId: number): string {
+function formatWallet(userId: number, mode: "freelancer" | "buyer"): string {
   const wallet = walletSummary(store.snapshot(), userId);
-  return [
-    "Neosence Wallet",
+  const common = [
+    `User ID: ${userId}`,
     `Available: ${wallet.available} BDT`,
     `Pending: ${wallet.pending} BDT`,
     `Withdrawable: ${wallet.withdrawable} BDT`,
     `Escrow locked: ${wallet.escrow} BDT`
+  ];
+
+  if (mode === "buyer") {
+    return [
+      "Neosence Buyer Balance",
+      ...common,
+      "",
+      "Deposit:",
+      "Send payment to admin, then share your User ID and amount.",
+      "Admin command after payment confirmation:",
+      `/deposit ${userId} <amount> buyer deposit`
+    ].join("\n");
+  }
+
+  return [
+    "Neosence Freelancer Wallet",
+    ...common,
+    "",
+    "Withdraw:",
+    "/withdraw 100 bkash:01XXXXXXXXX"
   ].join("\n");
 }
 
 function formatMode(mode: "freelancer" | "buyer"): string {
   return mode === "freelancer" ? "Freelancer Mode" : "Buyer Mode";
+}
+
+function formatWithdrawHelp(userId: number): string {
+  const wallet = walletSummary(store.snapshot(), userId);
+  return [
+    "Withdraw Request",
+    `Withdrawable: ${wallet.withdrawable} BDT`,
+    "",
+    "Format:",
+    "/withdraw 100 bkash:01XXXXXXXXX"
+  ].join("\n");
+}
+
+function formatUserLookup(userId: number): string {
+  const state = store.snapshot();
+  const user = state.users.find((item) => item.id === userId);
+  const wallet = walletSummary(state, userId);
+  const buyerTasks = state.tasks.filter((task) => task.buyerId === userId);
+  const submissions = state.submissions.filter((submission) => submission.workerId === userId);
+  const withdrawals = state.withdrawals.filter((withdrawal) => withdrawal.userId === userId);
+
+  return [
+    "User Lookup",
+    `ID: ${userId}`,
+    `Name: ${user?.firstName ?? "Unknown"}`,
+    `Username: ${user?.username ? `@${user.username}` : "N/A"}`,
+    `Mode: ${user?.mode ?? "N/A"}`,
+    `Trust: ${user?.trustLevel ?? "N/A"}`,
+    `Banned: ${user?.isBanned ?? false}`,
+    "",
+    "Wallet:",
+    `Available: ${wallet.available} BDT`,
+    `Withdrawable: ${wallet.withdrawable} BDT`,
+    `Escrow: ${wallet.escrow} BDT`,
+    "",
+    `Buyer campaigns: ${buyerTasks.length}`,
+    `Worker submissions: ${submissions.length}`,
+    `Withdrawals: ${withdrawals.length}`
+  ].join("\n");
 }
 
 async function startTaskWizard(ctx: Context & { from: TelegramFrom }) {
