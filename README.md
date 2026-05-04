@@ -43,7 +43,7 @@ Required Railway variables:
 ```text
 BOT_TOKEN=your_telegram_bot_token
 ADMIN_IDS=your_telegram_user_id
-DATABASE_URL=${{Postgres.DATABASE_URL}}
+DATABASE_URL=your_postgres_connection_string
 PLATFORM_FEE_PERCENT=15
 AUTO_WITHDRAW_HOLD_HOURS=24
 ```
@@ -56,6 +56,8 @@ npm run start
 ```
 
 The app exposes `/health` so Railway can check the deployment. The Telegram bot currently uses long polling, so no public webhook setup is required for MVP testing.
+
+Railway Postgres or Neon Postgres both work. Keep the database URL only in Railway variables, never in git.
 
 ## Bot Commands
 

@@ -177,5 +177,10 @@ export function createStore(options: { databaseUrl?: string; dataFile: string })
 }
 
 function needsSsl(databaseUrl: string): boolean {
-  return databaseUrl.includes("railway") || databaseUrl.includes("proxy.rlwy.net");
+  return (
+    databaseUrl.includes("railway") ||
+    databaseUrl.includes("proxy.rlwy.net") ||
+    databaseUrl.includes("neon.tech") ||
+    databaseUrl.includes("sslmode=require")
+  );
 }
