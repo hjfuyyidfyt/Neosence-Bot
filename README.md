@@ -83,6 +83,8 @@ The health response includes service name, version, environment, start time, and
 - `/user <userId>` - admin user lookup with wallet and activity summary
 - `/ban <userId>` - admin bans a user
 - `/unban <userId>` - admin unbans a user
+- `/tickets` - admin lists open support tickets
+- `/closeticket <ticketId>` - admin closes a support ticket
 - `/approve <submissionId>` - approve proof
 - `/reject <submissionId> <reason>` - reject proof
 - `/paywithdraw <withdrawalId>` - admin marks withdrawal paid
@@ -157,3 +159,7 @@ Freelancers can open `Referrals` to get their invite link. New users who start t
 ## User Safety
 
 Admins can ban or unban users. Banned users are blocked from commands, buttons, task proof submission, and task creation while admins remain able to inspect and manage accounts.
+
+## Support Tickets
+
+Users can press `Support` and send a message to create a support ticket. Admins can list tickets with `/tickets` and close them with `/closeticket <ticketId>`.

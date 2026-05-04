@@ -9,6 +9,7 @@ import {
   createReferral,
   createTask,
   createTransaction,
+  createSupportTicket,
   createVerificationEvent,
   createWithdrawal,
   escrowRequired,
@@ -34,6 +35,7 @@ await store.load();
 const bot = new Telegraf(config.botToken);
 const proofWaiters = new Map<number, string>();
 const quizWaiters = new Map<number, string>();
+const supportWaiters = new Set<number>();
 type TaskDraftStep =
   | "title"
   | "category"
@@ -220,11 +222,34 @@ bot.command("admin", async (ctx) => {
     "/user <userId>",
     "/ban <userId>",
     "/unban <userId>",
+    "/tickets",
+    "/closeticket <ticketId>",
     "/approve <submissionId>",
     "/reject <submissionId> <reason>",
     "/paywithdraw <withdrawalId>",
     "/rejectwithdraw <withdrawalId> <reason>"
   ].join("\n"), adminReviewKeyboard(pendingSubmissions, pendingWithdrawals));
+});
+
+bot.command("tickets", async (ctx) => {
+  if (!ctx.from || !isAdmin(ctx.from.id)) return;
+  await ctx.reply(formatOpenTickets());
+});
+
+bot.command("closeticket", async (ctx) => {
+  if (!ctx.from || !isAdmin(ctx.from.id)) return;
+  const [, ticketId] = ctx.message.text.split(" ");
+  if (!ticketId) {
+    await ctx.reply("Format: /closeticket <ticketId>");
+    return;
+  }
+
+  try {
+    const ticket = await closeSupportTicket(ticketId);
+    await ctx.reply(`Closed ticket ${ticket.id}.`);
+  } catch (error) {
+    await ctx.reply((error as Error).message);
+  }
 });
 
 bot.command("ban", async (ctx) => {
@@ -437,7 +462,8 @@ bot.action("menu:referrals", async (ctx) => {
 
 bot.action("menu:support", async (ctx) => {
   await ctx.answerCbQuery();
-  await ctx.reply("Support MVP: contact admin. Later ekhane ticket system add hobe.");
+  supportWaiters.add(ctx.from.id);
+  await ctx.reply("Support message likho. Next message ticket hisebe admin-er jonno save hobe.");
 });
 
 bot.action("noop", async (ctx) => {
@@ -697,6 +723,11 @@ bot.on("message", async (ctx, next) => {
     return;
   }
 
+  if (supportWaiters.has(ctx.from.id)) {
+    await handleSupportMessage(ctx);
+    return;
+  }
+
   const draft = taskDrafts.get(ctx.from.id);
   if (draft) {
     await handleTaskWizardMessage(ctx, draft);
@@ -832,6 +863,7 @@ async function setUserBanStatus(userId: number, isBanned: boolean) {
   taskDrafts.delete(userId);
   proofWaiters.delete(userId);
   quizWaiters.delete(userId);
+  supportWaiters.delete(userId);
   return updatedUser;
 }
 
@@ -886,6 +918,49 @@ function formatReferralStats(userId: number, botUsername?: string): string {
     "Invite link:",
     link
   ].join("\n");
+}
+
+async function handleSupportMessage(ctx: Context & { from: TelegramFrom; message: unknown }) {
+  const message = extractText(ctx.message);
+  if (!message) {
+    await ctx.reply("Support ticket-er jonno text message pathao.");
+    return;
+  }
+
+  const ticket = createSupportTicket(ctx.from.id, message.slice(0, 1500));
+  await store.addSupportTicket(ticket);
+  supportWaiters.delete(ctx.from.id);
+  await ctx.reply(`Support ticket created: ${ticket.id}`);
+}
+
+function formatOpenTickets(): string {
+  const tickets = store.snapshot().supportTickets.filter((ticket) => ticket.status === "open");
+  if (tickets.length === 0) return "No open support tickets.";
+
+  return [
+    `Open support tickets: ${tickets.length}`,
+    "",
+    ...tickets.slice(0, 15).map((ticket) => [
+      `Ticket: ${ticket.id}`,
+      `User: ${ticket.userId}`,
+      `Message: ${ticket.message}`,
+      `Created: ${ticket.createdAt}`
+    ].join("\n"))
+  ].join("\n\n");
+}
+
+async function closeSupportTicket(ticketId: string) {
+  const ticket = store.snapshot().supportTickets.find((item) => item.id === ticketId);
+  if (!ticket) throw new Error("Ticket not found.");
+  if (ticket.status === "closed") throw new Error("Ticket already closed.");
+
+  const closedTicket = {
+    ...ticket,
+    status: "closed" as const,
+    closedAt: new Date().toISOString()
+  };
+  await store.updateSupportTicket(closedTicket);
+  return closedTicket;
 }
 
 async function startTaskWizard(ctx: Context & { from: TelegramFrom }) {

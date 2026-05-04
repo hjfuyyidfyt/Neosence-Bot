@@ -5,6 +5,7 @@ import type {
   StoreState,
   Referral,
   Submission,
+  SupportTicket,
   Task,
   UserProfile,
   VerificationEvent,
@@ -21,7 +22,8 @@ const emptyState = (): StoreState => ({
   walletTransactions: [],
   withdrawals: [],
   verificationEvents: [],
-  referrals: []
+  referrals: [],
+  supportTickets: []
 });
 
 export interface NeosenceStore {
@@ -37,6 +39,8 @@ export interface NeosenceStore {
   updateWithdrawal(withdrawal: Withdrawal): Promise<void>;
   addReferral(referral: Referral): Promise<void>;
   addVerificationEvent(event: VerificationEvent): Promise<void>;
+  addSupportTicket(ticket: SupportTicket): Promise<void>;
+  updateSupportTicket(ticket: SupportTicket): Promise<void>;
 }
 
 abstract class CachedStore implements NeosenceStore {
@@ -105,6 +109,18 @@ abstract class CachedStore implements NeosenceStore {
 
   async addVerificationEvent(event: VerificationEvent): Promise<void> {
     this.state.verificationEvents.push(event);
+    await this.save();
+  }
+
+  async addSupportTicket(ticket: SupportTicket): Promise<void> {
+    this.state.supportTickets.push(ticket);
+    await this.save();
+  }
+
+  async updateSupportTicket(ticket: SupportTicket): Promise<void> {
+    const index = this.state.supportTickets.findIndex((item) => item.id === ticket.id);
+    if (index < 0) throw new Error(`Support ticket not found: ${ticket.id}`);
+    this.state.supportTickets[index] = ticket;
     await this.save();
   }
 }

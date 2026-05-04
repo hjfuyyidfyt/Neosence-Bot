@@ -107,6 +107,15 @@ export interface Referral {
   createdAt: string;
 }
 
+export interface SupportTicket {
+  id: string;
+  userId: number;
+  message: string;
+  status: "open" | "closed";
+  createdAt: string;
+  closedAt?: string;
+}
+
 export interface StoreState {
   users: UserProfile[];
   tasks: Task[];
@@ -115,4 +124,5 @@ export interface StoreState {
   withdrawals: Withdrawal[];
   verificationEvents: VerificationEvent[];
   referrals: Referral[];
+  supportTickets: SupportTicket[];
 }

@@ -3,6 +3,7 @@ import type {
   StoreState,
   Referral,
   Submission,
+  SupportTicket,
   Task,
   TaskApprovalType,
   UserMode,
@@ -158,6 +159,16 @@ export function createVerificationEvent(input: {
     type: input.type,
     status: input.status,
     metadata: input.metadata ?? {},
+    createdAt: now()
+  };
+}
+
+export function createSupportTicket(userId: number, message: string): SupportTicket {
+  return {
+    id: id("ticket"),
+    userId,
+    message,
+    status: "open",
     createdAt: now()
   };
 }
