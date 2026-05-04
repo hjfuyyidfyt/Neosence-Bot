@@ -59,6 +59,14 @@ The app exposes `/health` so Railway can check the deployment. The Telegram bot 
 
 Railway Postgres or Neon Postgres both work. Keep the database URL only in Railway variables, never in git.
 
+After pushing a change, wait until Railway is serving the latest commit:
+
+```bash
+npm run verify:deploy -- https://your-app.up.railway.app
+```
+
+The health response includes service name, version, environment, start time, and commit hash when Railway provides it.
+
 ## Bot Commands
 
 - `/start` - open main menu

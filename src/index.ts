@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import { Context, Telegraf } from "telegraf";
 import { config, isAdmin } from "./config.js";
+import { runtime } from "./runtime.js";
 import { createStore } from "./store.js";
 import {
   approveSubmission,
@@ -23,7 +24,7 @@ const store = createStore({ databaseUrl: config.databaseUrl, dataFile: config.da
 createServer((request, response) => {
   if (request.url === "/health") {
     response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify({ ok: true, service: "neosence-bot" }));
+    response.end(JSON.stringify({ ok: true, ...runtime }));
     return;
   }
 
