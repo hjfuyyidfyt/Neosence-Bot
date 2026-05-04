@@ -163,3 +163,7 @@ Admins can ban or unban users. Banned users are blocked from commands, buttons, 
 ## Support Tickets
 
 Users can press `Support` and send a message to create a support ticket. Admins can list tickets with `/tickets` and close them with `/closeticket <ticketId>`.
+
+## Manual Testing
+
+Use `TEST_CHECKLIST.md` for the full end-to-end Telegram test pass after deployment.
