@@ -46,6 +46,7 @@ ADMIN_IDS=your_telegram_user_id
 DATABASE_URL=your_postgres_connection_string
 PLATFORM_FEE_PERCENT=15
 AUTO_WITHDRAW_HOLD_HOURS=24
+REFERRAL_BONUS_BDT=1
 ```
 
 Railway will run:
@@ -141,3 +142,7 @@ Buyers can open `My Campaigns` to view campaign status and stats. Active campaig
 ## Wallet UX
 
 Wallet text changes by mode. Freelancer mode highlights withdrawable balance and `/withdraw`; buyer mode highlights User ID and manual deposit instructions for admin-confirmed deposits.
+
+## Referrals
+
+Freelancers can open `Referrals` to get their invite link. New users who start the bot with `?start=ref_<userId>` are tracked once, self-referrals are ignored, and the referrer receives the configured `REFERRAL_BONUS_BDT`.

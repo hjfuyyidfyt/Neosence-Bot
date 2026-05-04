@@ -98,6 +98,15 @@ export interface VerificationEvent {
   createdAt: string;
 }
 
+export interface Referral {
+  id: string;
+  referrerId: number;
+  referredUserId: number;
+  bonusAmount: number;
+  status: "credited" | "blocked";
+  createdAt: string;
+}
+
 export interface StoreState {
   users: UserProfile[];
   tasks: Task[];
@@ -105,4 +114,5 @@ export interface StoreState {
   walletTransactions: WalletTransaction[];
   withdrawals: Withdrawal[];
   verificationEvents: VerificationEvent[];
+  referrals: Referral[];
 }

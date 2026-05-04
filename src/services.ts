@@ -1,6 +1,7 @@
 import { config } from "./config.js";
 import type {
   StoreState,
+  Referral,
   Submission,
   Task,
   TaskApprovalType,
@@ -122,6 +123,22 @@ export function createWithdrawal(userId: number, amount: number, method: string)
     amount: roundMoney(amount),
     method,
     status: "pending",
+    createdAt: now()
+  };
+}
+
+export function createReferral(input: {
+  referrerId: number;
+  referredUserId: number;
+  bonusAmount: number;
+  status?: Referral["status"];
+}): Referral {
+  return {
+    id: id("ref"),
+    referrerId: input.referrerId,
+    referredUserId: input.referredUserId,
+    bonusAmount: roundMoney(input.bonusAmount),
+    status: input.status ?? "credited",
     createdAt: now()
   };
 }

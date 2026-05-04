@@ -8,6 +8,7 @@ const envSchema = z.object({
   DATA_FILE: z.string().default("./data/neosence-store.json"),
   PLATFORM_FEE_PERCENT: z.coerce.number().min(0).max(50).default(15),
   AUTO_WITHDRAW_HOLD_HOURS: z.coerce.number().min(0).default(24),
+  REFERRAL_BONUS_BDT: z.coerce.number().min(0).default(1),
   PORT: z.coerce.number().default(3000)
 });
 
@@ -22,6 +23,7 @@ export const config = {
   dataFile: env.DATA_FILE,
   platformFeePercent: env.PLATFORM_FEE_PERCENT,
   autoWithdrawHoldHours: env.AUTO_WITHDRAW_HOLD_HOURS,
+  referralBonusBdt: env.REFERRAL_BONUS_BDT,
   port: env.PORT
 };
 

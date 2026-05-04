@@ -3,6 +3,7 @@ import { dirname } from "node:path";
 import pg from "pg";
 import type {
   StoreState,
+  Referral,
   Submission,
   Task,
   UserProfile,
@@ -18,7 +19,8 @@ const emptyState = (): StoreState => ({
   submissions: [],
   walletTransactions: [],
   withdrawals: [],
-  verificationEvents: []
+  verificationEvents: [],
+  referrals: []
 });
 
 export interface NeosenceStore {
@@ -32,6 +34,7 @@ export interface NeosenceStore {
   addTransaction(transaction: WalletTransaction): Promise<void>;
   addWithdrawal(withdrawal: Withdrawal): Promise<void>;
   updateWithdrawal(withdrawal: Withdrawal): Promise<void>;
+  addReferral(referral: Referral): Promise<void>;
 }
 
 abstract class CachedStore implements NeosenceStore {
@@ -90,6 +93,11 @@ abstract class CachedStore implements NeosenceStore {
     const index = this.state.withdrawals.findIndex((item) => item.id === withdrawal.id);
     if (index < 0) throw new Error(`Withdrawal not found: ${withdrawal.id}`);
     this.state.withdrawals[index] = withdrawal;
+    await this.save();
+  }
+
+  async addReferral(referral: Referral): Promise<void> {
+    this.state.referrals.push(referral);
     await this.save();
   }
 }

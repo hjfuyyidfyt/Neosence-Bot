@@ -6,6 +6,7 @@ import { createStore } from "./store.js";
 import {
   approveSubmission,
   createSubmission,
+  createReferral,
   createTask,
   createTransaction,
   createWithdrawal,
@@ -64,9 +65,16 @@ interface TaskDraft {
 const taskDrafts = new Map<number, TaskDraft>();
 
 bot.start(async (ctx) => {
+  const wasExistingUser = store.snapshot().users.some((item) => item.id === ctx.from.id);
   const user = await ensureUser(ctx.from);
+  const referralMessage = await maybeApplyReferral(getStartPayload(ctx.message.text), user.id, wasExistingUser);
   await ctx.reply(
-    `Welcome to Neosence Bot.\n\nCurrent workspace: ${formatMode(user.mode)}.`,
+    [
+      "Welcome to Neosence Bot.",
+      "",
+      `Current workspace: ${formatMode(user.mode)}.`,
+      referralMessage
+    ].filter(Boolean).join("\n"),
     mainMenu(user)
   );
 });
@@ -377,7 +385,8 @@ bot.action("menu:withdraw", async (ctx) => {
 
 bot.action("menu:referrals", async (ctx) => {
   await ctx.answerCbQuery();
-  await ctx.reply("Referral system next milestone-e add hobe. Ekhon task marketplace core flow test kora hocche.");
+  const user = await ensureUser(ctx.from);
+  await ctx.reply(formatReferralStats(user.id, ctx.botInfo?.username));
 });
 
 bot.action("menu:support", async (ctx) => {
@@ -724,6 +733,7 @@ function formatUserLookup(userId: number): string {
   const buyerTasks = state.tasks.filter((task) => task.buyerId === userId);
   const submissions = state.submissions.filter((submission) => submission.workerId === userId);
   const withdrawals = state.withdrawals.filter((withdrawal) => withdrawal.userId === userId);
+  const referrals = state.referrals.filter((referral) => referral.referrerId === userId);
 
   return [
     "User Lookup",
@@ -741,7 +751,61 @@ function formatUserLookup(userId: number): string {
     "",
     `Buyer campaigns: ${buyerTasks.length}`,
     `Worker submissions: ${submissions.length}`,
-    `Withdrawals: ${withdrawals.length}`
+    `Withdrawals: ${withdrawals.length}`,
+    `Referrals: ${referrals.length}`
+  ].join("\n");
+}
+
+function getStartPayload(text: string): string | undefined {
+  const [, payload] = text.split(" ");
+  return payload?.trim();
+}
+
+async function maybeApplyReferral(payload: string | undefined, userId: number, wasExistingUser: boolean): Promise<string | undefined> {
+  if (!payload?.startsWith("ref_") || wasExistingUser) return undefined;
+
+  const referrerId = Number(payload.replace("ref_", ""));
+  if (!Number.isFinite(referrerId) || referrerId === userId) return undefined;
+
+  const state = store.snapshot();
+  const referrerExists = state.users.some((user) => user.id === referrerId);
+  const alreadyReferred = state.referrals.some((referral) => referral.referredUserId === userId);
+  if (!referrerExists || alreadyReferred) return undefined;
+
+  const referral = createReferral({
+    referrerId,
+    referredUserId: userId,
+    bonusAmount: config.referralBonusBdt
+  });
+  await store.addReferral(referral);
+
+  if (config.referralBonusBdt > 0) {
+    await store.addTransaction(createTransaction({
+      userId: referrerId,
+      type: "earn",
+      amount: config.referralBonusBdt,
+      note: `Referral bonus for user ${userId}`
+    }));
+  }
+
+  return "Referral applied.";
+}
+
+function formatReferralStats(userId: number, botUsername?: string): string {
+  const referrals = store.snapshot().referrals.filter((referral) => referral.referrerId === userId);
+  const credited = referrals.filter((referral) => referral.status === "credited");
+  const earned = credited.reduce((sum, referral) => sum + referral.bonusAmount, 0);
+  const link = botUsername ? `https://t.me/${botUsername}?start=ref_${userId}` : `https://t.me/YOUR_BOT_USERNAME?start=ref_${userId}`;
+
+  return [
+    "Neosence Referrals",
+    `Your ID: ${userId}`,
+    `Invites: ${referrals.length}`,
+    `Credited: ${credited.length}`,
+    `Referral earning: ${Math.round(earned * 100) / 100} BDT`,
+    "",
+    "Invite link:",
+    link
   ].join("\n");
 }
 
