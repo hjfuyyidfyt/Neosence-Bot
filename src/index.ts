@@ -877,7 +877,8 @@ function formatWallet(userId: number, mode: "freelancer" | "buyer"): string {
     `Available: ${wallet.available} BDT`,
     `Pending: ${wallet.pending} BDT`,
     `Withdrawable: ${wallet.withdrawable} BDT`,
-    `Escrow locked: ${wallet.escrow} BDT`
+    `Escrow locked: ${wallet.escrow} BDT`,
+    `Auto earning hold: ${Math.max(wallet.available - wallet.withdrawable, 0)} BDT`
   ];
 
   if (mode === "buyer") {

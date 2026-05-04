@@ -194,6 +194,10 @@ export function createSupportTicket(userId: number, message: string): SupportTic
 export function walletSummary(state: StoreState, userId: number) {
   const completed = state.walletTransactions.filter((item) => item.userId === userId && item.status === "completed");
   const pending = state.walletTransactions.filter((item) => item.userId === userId && item.status === "pending");
+  const heldAutoEarn = completed
+    .filter((item) => item.type === "earn" && item.note?.includes("Withdraw hold target"))
+    .filter((item) => isWithinHoldWindow(item.createdAt))
+    .reduce((sum, item) => sum + item.amount, 0);
 
   const available = completed.reduce((sum, item) => {
     if (["deposit", "earn", "escrow_refund", "withdraw_rejected"].includes(item.type)) return sum + item.amount;
@@ -212,7 +216,7 @@ export function walletSummary(state: StoreState, userId: number) {
   return {
     available: roundMoney(available),
     pending: roundMoney(pendingAmount),
-    withdrawable: roundMoney(Math.max(available, 0)),
+    withdrawable: roundMoney(Math.max(available - heldAutoEarn, 0)),
     escrow: roundMoney(Math.max(escrow, 0))
   };
 }
@@ -286,4 +290,12 @@ export function rejectSubmission(state: StoreState, submissionId: string, reason
 
 function roundMoney(value: number): number {
   return Math.round(value * 100) / 100;
+}
+
+function isWithinHoldWindow(createdAt: string): boolean {
+  if (config.autoWithdrawHoldHours <= 0) return false;
+  const createdTime = new Date(createdAt).getTime();
+  if (!Number.isFinite(createdTime)) return false;
+  const holdMs = config.autoWithdrawHoldHours * 60 * 60 * 1000;
+  return Date.now() - createdTime < holdMs;
 }

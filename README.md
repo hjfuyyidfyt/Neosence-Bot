@@ -155,6 +155,8 @@ Buyers can open `My Campaigns` to view campaign status and stats. Active campaig
 
 Wallet text changes by mode. Freelancer mode highlights withdrawable balance and `/withdraw`; buyer mode highlights User ID and `/depositreq` for admin-reviewed deposits.
 
+Auto-verified earnings respect `AUTO_WITHDRAW_HOLD_HOURS`: they appear in available balance immediately but are excluded from withdrawable balance until the hold window expires.
+
 ## Deposit Requests
 
 Users submit deposit requests with `/depositreq <amount> <method> <proof>`. Admins can approve or reject deposit requests from `/admin` quick buttons or command fallbacks. Approved deposits add wallet balance.

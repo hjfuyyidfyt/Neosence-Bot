@@ -57,6 +57,7 @@ Use this after Railway is serving the latest commit.
 - Admin approves deposit request and user balance increases.
 - Admin `/deposit <userId> <amount> <note>` still adds manual balance.
 - Freelancer wallet shows withdrawable amount.
+- Auto-verified earning appears in available balance but is held from withdrawable balance during hold window.
 - `/withdraw 100 bkash:...` creates withdrawal request.
 - Admin `/paywithdraw <withdrawalId>` marks paid.
 - Admin `/rejectwithdraw <withdrawalId> <reason>` refunds rejected withdrawal.
