@@ -180,6 +180,10 @@ Users can press `Support` and send a message to create a support ticket. Admins 
 
 Workers can dispute rejected submissions with `/dispute <submissionId> <reason>`. Admins can review open disputes from `/admin` or `/disputes`, then either pay the worker or uphold the rejection.
 
+## Trust Levels
+
+Worker trust levels update from task history. Approved and auto-approved submissions increase trust, rejections and disputes affect it. Admin `/user <userId>` shows stored and calculated trust data.
+
 ## Manual Testing
 
 Use `TEST_CHECKLIST.md` for the full end-to-end Telegram test pass after deployment.

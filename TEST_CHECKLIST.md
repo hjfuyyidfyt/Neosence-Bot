@@ -81,3 +81,4 @@ Use this after Railway is serving the latest commit.
 - Admin `/closeticket <ticketId>` closes ticket.
 - Admin `/ban <userId>` blocks user actions.
 - Admin `/unban <userId>` restores access.
+- Admin `/user <userId>` shows trust, approval, rejection, and dispute stats.

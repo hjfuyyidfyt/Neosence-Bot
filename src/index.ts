@@ -15,6 +15,7 @@ import {
   createVerificationEvent,
   createWithdrawal,
   escrowRequired,
+  calculateTrustLevel,
   getOrCreateUser,
   rejectSubmission,
   switchMode,
@@ -997,9 +998,13 @@ function formatUserLookup(userId: number): string {
   const wallet = walletSummary(state, userId);
   const buyerTasks = state.tasks.filter((task) => task.buyerId === userId);
   const submissions = state.submissions.filter((submission) => submission.workerId === userId);
+  const approved = submissions.filter((submission) => submission.status === "approved" || submission.status === "auto_approved").length;
+  const rejected = submissions.filter((submission) => submission.status === "rejected").length;
   const withdrawals = state.withdrawals.filter((withdrawal) => withdrawal.userId === userId);
   const deposits = state.deposits.filter((deposit) => deposit.userId === userId);
   const referrals = state.referrals.filter((referral) => referral.referrerId === userId);
+  const disputes = state.disputes.filter((dispute) => dispute.workerId === userId);
+  const calculatedTrust = calculateTrustLevel(state, userId);
 
   return [
     "User Lookup",
@@ -1007,7 +1012,7 @@ function formatUserLookup(userId: number): string {
     `Name: ${user?.firstName ?? "Unknown"}`,
     `Username: ${user?.username ? `@${user.username}` : "N/A"}`,
     `Mode: ${user?.mode ?? "N/A"}`,
-    `Trust: ${user?.trustLevel ?? "N/A"}`,
+    `Trust: ${user?.trustLevel ?? "N/A"} (calculated: ${calculatedTrust})`,
     `Banned: ${user?.isBanned ?? false}`,
     "",
     "Wallet:",
@@ -1017,6 +1022,9 @@ function formatUserLookup(userId: number): string {
     "",
     `Buyer campaigns: ${buyerTasks.length}`,
     `Worker submissions: ${submissions.length}`,
+    `Approved: ${approved}`,
+    `Rejected: ${rejected}`,
+    `Disputes: ${disputes.length}`,
     `Deposits: ${deposits.length}`,
     `Withdrawals: ${withdrawals.length}`,
     `Referrals: ${referrals.length}`
@@ -1038,6 +1046,21 @@ async function setUserBanStatus(userId: number, isBanned: boolean) {
   quizWaiters.delete(userId);
   supportWaiters.delete(userId);
   return updatedUser;
+}
+
+async function refreshUserTrustLevel(userId: number) {
+  const state = store.snapshot();
+  const user = state.users.find((item) => item.id === userId);
+  if (!user) return;
+
+  const trustLevel = calculateTrustLevel(state, userId);
+  if (user.trustLevel === trustLevel) return;
+
+  await store.upsertUser({
+    ...user,
+    trustLevel,
+    updatedAt: new Date().toISOString()
+  });
 }
 
 function getStartPayload(text: string): string | undefined {
@@ -1394,6 +1417,7 @@ async function approveSubmissionById(submissionId: string, reviewerId: number) {
   await store.updateTask(result.task);
   await store.addTransaction(result.earnTransaction);
   await store.addTransaction(result.escrowReleaseTransaction);
+  await refreshUserTrustLevel(result.submission.workerId);
 
   return {
     workerId: result.submission.workerId,
@@ -1405,6 +1429,7 @@ async function rejectSubmissionById(submissionId: string, reason: string, review
   assertCanReviewSubmission(submissionId, reviewerId);
   const submission = rejectSubmission(store.snapshot(), submissionId, reason);
   await store.updateSubmission(submission);
+  await refreshUserTrustLevel(submission.workerId);
   return submission;
 }
 
@@ -1549,6 +1574,7 @@ async function resolveDisputePayWorker(disputeId: string) {
     submissionId: submission.id,
     note: `Dispute payout: ${dispute.id}`
   }));
+  await refreshUserTrustLevel(submission.workerId);
   return resolvedDispute;
 }
 
@@ -1934,6 +1960,7 @@ async function completeAutoTask(task: Task, workerId: number, proof: string, not
     taskId: task.id,
     submissionId: submission.id
   }));
+  await refreshUserTrustLevel(workerId);
 }
 
 function normalizeAnswer(answer: string): string {

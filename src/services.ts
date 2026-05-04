@@ -239,6 +239,20 @@ export function walletSummary(state: StoreState, userId: number) {
   };
 }
 
+export function calculateTrustLevel(state: StoreState, userId: number): UserProfile["trustLevel"] {
+  const submissions = state.submissions.filter((submission) => submission.workerId === userId);
+  const approved = submissions.filter((submission) => submission.status === "approved" || submission.status === "auto_approved").length;
+  const rejected = submissions.filter((submission) => submission.status === "rejected").length;
+  const disputes = state.disputes.filter((dispute) => dispute.workerId === userId).length;
+  const totalReviewed = approved + rejected;
+  const approvalRate = totalReviewed > 0 ? approved / totalReviewed : 0;
+
+  if (approved >= 100 && approvalRate >= 0.95 && disputes <= 3) return "pro";
+  if (approved >= 30 && approvalRate >= 0.9 && disputes <= 2) return "trusted";
+  if (approved >= 5 && approvalRate >= 0.8) return "verified";
+  return "new";
+}
+
 export function visibleTasks(state: StoreState, workerId: number): Task[] {
   const attempted = new Set(state.submissions.filter((item) => item.workerId === workerId).map((item) => item.taskId));
   return state.tasks.filter(
