@@ -3000,7 +3000,12 @@ bot.catch((error) => {
 });
 
 try {
-  await bot.launch();
+  await bot.telegram.getMe();
+  void bot.launch().catch((error) => {
+    botRuntime.launchState = "failed";
+    botRuntime.lastError = error instanceof Error ? error.message : String(error);
+    console.error("Bot launch failed", error);
+  });
   botRuntime.launchState = "running";
   botRuntime.lastError = undefined;
   console.log("Neosence Bot is running");
