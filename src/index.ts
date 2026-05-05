@@ -24,7 +24,8 @@ import {
 } from "./services.js";
 import { formatTask, mainMenu, modeMenu, taskActionButtons } from "./ui.js";
 import { getMessages, t } from "./messages.js";
-import type { DepositRequest, Dispute, Submission, Task, TaskApprovalType, TaskStatus, TrackedChat, VerificationType, Withdrawal } from "./types.js";
+import type { MessageBundle } from "./messages.js";
+import type { ApiVerificationPayload, DepositRequest, Dispute, Submission, Task, TaskApprovalType, TaskStatus, TrackedChat, VerificationType, Withdrawal } from "./types.js";
 
 const store = createStore({ databaseUrl: config.databaseUrl, dataFile: config.dataFile });
 
@@ -39,6 +40,7 @@ await store.load();
 const bot = new Telegraf(config.botToken);
 const proofWaiters = new Map<number, string>();
 const quizWaiters = new Map<number, string>();
+const codeWaiters = new Map<number, string>();
 const supportWaiters = new Set<number>();
 type TaskDraftStep =
   | "task_type"
@@ -136,6 +138,7 @@ bot.command("cancel", async (ctx) => {
   taskDrafts.delete(ctx.from.id);
   proofWaiters.delete(ctx.from.id);
   quizWaiters.delete(ctx.from.id);
+  codeWaiters.delete(ctx.from.id);
   supportWaiters.delete(ctx.from.id);
   await ctx.reply(userMessages(ctx.from.id).common.currentInputCancelled);
 });
@@ -1087,7 +1090,21 @@ bot.action(/^verify:(.+)$/, async (ctx) => {
     return;
   }
 
-  await ctx.reply("This auto verification integration is not connected yet. Telegram join and website timer verification are ready now.");
+  if (task.verificationType === "in_app_code") {
+    codeWaiters.set(ctx.from.id, task.id);
+    await ctx.reply("Send the in-app verification code. Correct codes are rewarded instantly.");
+    return;
+  }
+
+  if (task.verificationType === "website_webhook" || task.verificationType === "app_attribution") {
+    await ctx.reply([
+      "This task is verified by the buyer's API/webhook.",
+      "Complete the required action on the website/app. Neosence will pay automatically when the buyer system confirms it."
+    ].join("\n"));
+    return;
+  }
+
+  await ctx.reply("This auto verification integration is not connected yet. Telegram join, website timer, in-app code, and webhook/API verification are ready now.");
 });
 
 bot.on("message", async (ctx, next) => {
@@ -1095,6 +1112,12 @@ bot.on("message", async (ctx, next) => {
   const quizTaskId = quizWaiters.get(ctx.from.id);
   if (quizTaskId) {
     await handleQuizAnswer(ctx, quizTaskId);
+    return;
+  }
+
+  const codeTaskId = codeWaiters.get(ctx.from.id);
+  if (codeTaskId) {
+    await handleInAppCodeAnswer(ctx, codeTaskId);
     return;
   }
 
@@ -1243,7 +1266,7 @@ function earnCategoryKeyboard(tasks: Task[]) {
   return Markup.inlineKeyboard(rows);
 }
 
-function earnTaskListKeyboard(tasks: Task[], category: string, page: number, totalPages: number, messages = t) {
+function earnTaskListKeyboard(tasks: Task[], category: string, page: number, totalPages: number, messages: MessageBundle = t) {
   const rows = tasks.map((task) => [
     Markup.button.callback(`${task.title} - ${task.rewardPerWorker} BDT`, `task:${task.id}`)
   ]);
@@ -1370,6 +1393,7 @@ async function setUserBanStatus(userId: number, isBanned: boolean) {
   taskDrafts.delete(userId);
   proofWaiters.delete(userId);
   quizWaiters.delete(userId);
+  codeWaiters.delete(userId);
   supportWaiters.delete(userId);
   return updatedUser;
 }
@@ -1552,7 +1576,7 @@ function applyTaskTypeTemplate(draft: TaskDraft, type: string) {
   draft.step = "title";
 }
 
-function verificationMethodKeyboard(category: string, messages = t) {
+function verificationMethodKeyboard(category: string, messages: MessageBundle = t) {
   const rows: Array<Array<ReturnType<typeof Markup.button.callback>>> = [];
   if (category === "telegram") {
     rows.push([Markup.button.callback(messages.verificationMethods.autoJoin, "wizard:method:auto_join")]);
@@ -1865,7 +1889,7 @@ async function handleTaskWizardMessage(ctx: Context & { from: TelegramFrom; mess
   await ctx.reply(messages.taskWizard.useButtons);
 }
 
-function confirmTaskKeyboard(messages = t) {
+function confirmTaskKeyboard(messages: MessageBundle = t) {
   return Markup.inlineKeyboard([
     [Markup.button.callback(messages.buttons.publishTask, "wizard:confirm")],
     [Markup.button.callback(messages.common.cancel, "wizard:cancel")]
@@ -1893,7 +1917,7 @@ async function promptNextCommercialStep(ctx: Context & { from: TelegramFrom }, d
   await ctx.reply(formatDraftReview(draft, messages), confirmTaskKeyboard(messages));
 }
 
-function formatDraftReview(draft: TaskDraft, messages = t): string {
+function formatDraftReview(draft: TaskDraft, messages: MessageBundle = t): string {
   const rewardTotal = (draft.rewardPerWorker ?? 0) * (draft.workerLimit ?? 0);
   const fee = rewardTotal * (config.platformFeePercent / 100);
   return [
@@ -1914,7 +1938,7 @@ function formatDraftReview(draft: TaskDraft, messages = t): string {
   ].filter(Boolean).join("\n");
 }
 
-function verificationTargetPrompt(type: VerificationType, messages = t): string {
+function verificationTargetPrompt(type: VerificationType, messages: MessageBundle = t): string {
   if (type === "telegram_join") return messages.taskWizard.telegramChatIdPrompt;
   if (type === "website_visit") return messages.taskWizard.websiteTargetPrompt;
   if (type === "website_webhook") return messages.taskWizard.webhookTargetPrompt;
@@ -2449,6 +2473,11 @@ async function handleHttpRequest(request: IncomingMessage, response: ServerRespo
     return;
   }
 
+  if (requestUrl.pathname === "/api/verify") {
+    await handleApiVerification(request, response, requestUrl);
+    return;
+  }
+
   response.writeHead(200, { "content-type": "text/plain" });
   response.end("Neosence Bot is running");
 }
@@ -2483,6 +2512,8 @@ async function handleWebsiteVisitTrack(request: IncomingMessage, response: Serve
 async function handleWebsiteVisitComplete(response: ServerResponse, requestUrl: URL) {
   const taskId = requestUrl.searchParams.get("taskId") ?? "";
   const workerId = Number(requestUrl.searchParams.get("workerId"));
+  const ip = requestUrl.searchParams.get("ip") ?? "unknown";
+  const userAgent = requestUrl.searchParams.get("ua") ?? "unknown";
   const task = store.snapshot().tasks.find((item) => item.id === taskId);
 
   if (!task || task.verificationType !== "website_visit" || !Number.isFinite(workerId)) {
@@ -2495,6 +2526,20 @@ async function handleWebsiteVisitComplete(response: ServerResponse, requestUrl: 
     (submission) => submission.taskId === task.id && submission.workerId === workerId
   );
 
+  const fraudReason = websiteVisitFraudReason(task, workerId, ip, userAgent);
+  if (fraudReason) {
+    await store.addVerificationEvent(createVerificationEvent({
+      taskId,
+      workerId,
+      type: "website_visit",
+      status: "failed",
+      metadata: { ip, userAgent, fraudReason, seconds: task.websiteVisitSeconds ?? 30 }
+    }));
+    response.writeHead(409, { "content-type": "application/json" });
+    response.end(JSON.stringify({ ok: false, error: fraudReason }));
+    return;
+  }
+
   if (!alreadySubmitted) {
     await store.addVerificationEvent(createVerificationEvent({
       taskId,
@@ -2502,8 +2547,8 @@ async function handleWebsiteVisitComplete(response: ServerResponse, requestUrl: 
       type: "website_visit",
       status: "passed",
       metadata: {
-        ip: requestUrl.searchParams.get("ip") ?? "unknown",
-        userAgent: requestUrl.searchParams.get("ua") ?? "unknown",
+        ip,
+        userAgent,
         seconds: task.websiteVisitSeconds ?? 30
       }
     }));
@@ -2518,6 +2563,118 @@ async function handleWebsiteVisitComplete(response: ServerResponse, requestUrl: 
 
   response.writeHead(200, { "content-type": "application/json" });
   response.end(JSON.stringify({ ok: true }));
+}
+
+function websiteVisitFraudReason(task: Task, workerId: number, ip: string, userAgent: string): string | undefined {
+  const state = store.snapshot();
+  const normalizedIp = normalizeFingerprint(ip);
+  const normalizedUa = normalizeFingerprint(userAgent);
+  const passedEvents = state.verificationEvents.filter(
+    (event) => event.taskId === task.id && event.type === "website_visit" && event.status === "passed"
+  );
+
+  const sameWorker = state.submissions.some((submission) => submission.taskId === task.id && submission.workerId === workerId);
+  if (sameWorker) return "worker_already_completed";
+
+  if (normalizedIp !== "unknown") {
+    const sameIp = passedEvents.find((event) => normalizeFingerprint(String(event.metadata.ip ?? "unknown")) === normalizedIp);
+    if (sameIp && sameIp.workerId !== workerId) return "duplicate_ip_for_task";
+  }
+
+  if (normalizedUa !== "unknown") {
+    const sameDeviceCount = passedEvents.filter(
+      (event) => normalizeFingerprint(String(event.metadata.userAgent ?? "unknown")) === normalizedUa
+    ).length;
+    if (sameDeviceCount >= 2) return "duplicate_device_for_task";
+  }
+
+  return undefined;
+}
+
+function normalizeFingerprint(value: string): string {
+  return value.split(",")[0]?.trim().toLowerCase() || "unknown";
+}
+
+async function handleApiVerification(request: IncomingMessage, response: ServerResponse, requestUrl: URL) {
+  if (request.method !== "POST") {
+    writeJson(response, 405, { ok: false, error: "method_not_allowed" });
+    return;
+  }
+
+  try {
+    const body = await readJsonBody(request);
+    const payload: ApiVerificationPayload = {
+      taskId: String(body.taskId ?? requestUrl.searchParams.get("taskId") ?? ""),
+      workerId: Number(body.workerId ?? requestUrl.searchParams.get("workerId")),
+      secret: stringOrUndefined(body.secret ?? requestUrl.searchParams.get("secret")),
+      proof: stringOrUndefined(body.proof),
+      event: stringOrUndefined(body.event),
+      code: stringOrUndefined(body.code)
+    };
+    const result = await completeApiVerifiedTask(payload);
+    writeJson(response, 200, result);
+  } catch (error) {
+    writeJson(response, 400, { ok: false, error: (error as Error).message });
+  }
+}
+
+async function completeApiVerifiedTask(payload: ApiVerificationPayload) {
+  if (!payload.taskId || !Number.isFinite(payload.workerId)) throw new Error("invalid_payload");
+
+  const task = store.snapshot().tasks.find((item) => item.id === payload.taskId);
+  if (!task) throw new Error("task_not_found");
+  if (!["website_webhook", "app_attribution", "in_app_code"].includes(task.verificationType ?? "")) {
+    throw new Error("task_does_not_use_api_verification");
+  }
+  const verificationType = task.verificationType as Extract<VerificationType, "website_webhook" | "app_attribution" | "in_app_code">;
+
+  assertApiSecret(task, payload.secret);
+  if (verificationType === "in_app_code" && payload.code && normalizeAnswer(payload.code) !== normalizeAnswer(task.verificationTarget ?? "")) {
+    await store.addVerificationEvent(createVerificationEvent({
+      taskId: task.id,
+      workerId: payload.workerId,
+      type: verificationType,
+      status: "failed",
+      metadata: { event: payload.event, reason: "code_mismatch" }
+    }));
+    throw new Error("code_mismatch");
+  }
+
+  await store.addVerificationEvent(createVerificationEvent({
+    taskId: task.id,
+    workerId: payload.workerId,
+    type: verificationType,
+    status: "passed",
+    metadata: { event: payload.event ?? "api_verified" }
+  }));
+  await completeAutoTask(task, payload.workerId, payload.proof ?? `${verificationType}_api_verified`, "API/webhook verified");
+  await bot.telegram.sendMessage(payload.workerId, `Task verified. ${task.rewardPerWorker} BDT added to your wallet.`);
+  return { ok: true, taskId: task.id, workerId: payload.workerId };
+}
+
+function assertApiSecret(task: Task, secret?: string) {
+  const expected = config.webhookSecret ?? task.verificationTarget;
+  if (!expected) throw new Error("webhook_secret_not_configured");
+  if (secret !== expected) throw new Error("invalid_secret");
+}
+
+async function readJsonBody(request: IncomingMessage): Promise<Record<string, unknown>> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of request) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    if (Buffer.concat(chunks).byteLength > 64 * 1024) throw new Error("payload_too_large");
+  }
+  if (chunks.length === 0) return {};
+  return JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
+}
+
+function writeJson(response: ServerResponse, status: number, body: Record<string, unknown>) {
+  response.writeHead(status, { "content-type": "application/json" });
+  response.end(JSON.stringify(body));
+}
+
+function stringOrUndefined(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
 function renderTimerPage(input: { seconds: number; completeUrl: string; targetUrl?: string }): string {
@@ -2726,6 +2883,51 @@ async function handleQuizAnswer(ctx: Context & { from: TelegramFrom; message: un
     await ctx.reply((error as Error).message);
   } finally {
     quizWaiters.delete(ctx.from.id);
+  }
+}
+
+async function handleInAppCodeAnswer(ctx: Context & { from: TelegramFrom; message: unknown }, taskId: string) {
+  const code = extractText(ctx.message);
+  if (!code) {
+    await ctx.reply("Send a text code.");
+    return;
+  }
+
+  const task = store.snapshot().tasks.find((item) => item.id === taskId);
+  if (!task || task.verificationType !== "in_app_code" || !task.verificationTarget) {
+    codeWaiters.delete(ctx.from.id);
+    await ctx.reply("In-app code task not found.");
+    return;
+  }
+
+  if (normalizeAnswer(code) !== normalizeAnswer(task.verificationTarget)) {
+    await store.addVerificationEvent(createVerificationEvent({
+      taskId: task.id,
+      workerId: ctx.from.id,
+      type: "in_app_code",
+      status: "failed",
+      metadata: { code: "mismatch" }
+    }));
+    await ctx.reply("Code did not match. Check the app instructions, then press Verify Now again.");
+    codeWaiters.delete(ctx.from.id);
+    return;
+  }
+
+  await store.addVerificationEvent(createVerificationEvent({
+    taskId: task.id,
+    workerId: ctx.from.id,
+    type: "in_app_code",
+    status: "passed",
+    metadata: { code: "matched" }
+  }));
+
+  try {
+    await completeAutoTask(task, ctx.from.id, "in_app_code_verified", "In-app code verified");
+    await ctx.reply(`Code verified. ${task.rewardPerWorker} BDT added to your wallet.`);
+  } catch (error) {
+    await ctx.reply((error as Error).message);
+  } finally {
+    codeWaiters.delete(ctx.from.id);
   }
 }
 

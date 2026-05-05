@@ -165,3 +165,12 @@ export interface StoreState {
   disputes: Dispute[];
   trackedChats: TrackedChat[];
 }
+
+export interface ApiVerificationPayload {
+  taskId: string;
+  workerId: number;
+  secret?: string;
+  proof?: string;
+  event?: string;
+  code?: string;
+}

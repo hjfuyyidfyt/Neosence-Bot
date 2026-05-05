@@ -217,6 +217,7 @@ export class PostgresStore extends CachedStore {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `);
+    await this.ensureProjectionTables();
 
     const result = await this.pool.query<{ value: StoreState }>(
       "SELECT value FROM app_state WHERE key = $1",
@@ -232,15 +233,147 @@ export class PostgresStore extends CachedStore {
   }
 
   protected async save(): Promise<void> {
-    await this.pool.query(
-      `
-      INSERT INTO app_state (key, value, updated_at)
-      VALUES ($1, $2::jsonb, NOW())
-      ON CONFLICT (key)
-      DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
-      `,
-      [this.stateKey, JSON.stringify(this.state)]
-    );
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        `
+        INSERT INTO app_state (key, value, updated_at)
+        VALUES ($1, $2::jsonb, NOW())
+        ON CONFLICT (key)
+        DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+        `,
+        [this.stateKey, JSON.stringify(this.state)]
+      );
+      await this.syncProjectionTables(client);
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  private async ensureProjectionTables(): Promise<void> {
+    await this.pool.query(`
+      CREATE TABLE IF NOT EXISTS ns_users (
+        id BIGINT PRIMARY KEY,
+        mode TEXT NOT NULL,
+        language TEXT NOT NULL,
+        trust_level TEXT NOT NULL,
+        is_banned BOOLEAN NOT NULL,
+        raw JSONB NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS ns_tasks (
+        id TEXT PRIMARY KEY,
+        buyer_id BIGINT NOT NULL,
+        category TEXT NOT NULL,
+        status TEXT NOT NULL,
+        verification_type TEXT,
+        verification_target TEXT,
+        raw JSONB NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS ns_submissions (
+        id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL,
+        worker_id BIGINT NOT NULL,
+        status TEXT NOT NULL,
+        raw JSONB NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS ns_wallet_transactions (
+        id TEXT PRIMARY KEY,
+        user_id BIGINT NOT NULL,
+        type TEXT NOT NULL,
+        status TEXT NOT NULL,
+        amount NUMERIC NOT NULL,
+        raw JSONB NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS ns_verification_events (
+        id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL,
+        worker_id BIGINT NOT NULL,
+        type TEXT NOT NULL,
+        status TEXT NOT NULL,
+        raw JSONB NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS ns_tracked_chats (
+        id BIGINT PRIMARY KEY,
+        type TEXT NOT NULL,
+        bot_status TEXT NOT NULL,
+        can_verify_members BOOLEAN NOT NULL,
+        raw JSONB NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      CREATE INDEX IF NOT EXISTS ns_tasks_buyer_status_idx ON ns_tasks (buyer_id, status);
+      CREATE INDEX IF NOT EXISTS ns_tasks_target_idx ON ns_tasks (verification_type, verification_target);
+      CREATE INDEX IF NOT EXISTS ns_submissions_task_status_idx ON ns_submissions (task_id, status);
+      CREATE INDEX IF NOT EXISTS ns_submissions_worker_idx ON ns_submissions (worker_id);
+      CREATE INDEX IF NOT EXISTS ns_wallet_user_idx ON ns_wallet_transactions (user_id, type, status);
+      CREATE INDEX IF NOT EXISTS ns_verification_task_worker_idx ON ns_verification_events (task_id, worker_id, type, status);
+    `);
+  }
+
+  private async syncProjectionTables(client: pg.PoolClient): Promise<void> {
+    await client.query("DELETE FROM ns_users");
+    await client.query("DELETE FROM ns_tasks");
+    await client.query("DELETE FROM ns_submissions");
+    await client.query("DELETE FROM ns_wallet_transactions");
+    await client.query("DELETE FROM ns_verification_events");
+    await client.query("DELETE FROM ns_tracked_chats");
+
+    for (const user of this.state.users) {
+      await client.query(
+        "INSERT INTO ns_users (id, mode, language, trust_level, is_banned, raw) VALUES ($1, $2, $3, $4, $5, $6::jsonb)",
+        [user.id, user.mode, user.language, user.trustLevel, user.isBanned, JSON.stringify(user)]
+      );
+    }
+
+    for (const task of this.state.tasks) {
+      await client.query(
+        "INSERT INTO ns_tasks (id, buyer_id, category, status, verification_type, verification_target, raw) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)",
+        [task.id, task.buyerId, task.category, task.status, task.verificationType ?? null, task.verificationTarget ?? null, JSON.stringify(task)]
+      );
+    }
+
+    for (const submission of this.state.submissions) {
+      await client.query(
+        "INSERT INTO ns_submissions (id, task_id, worker_id, status, raw) VALUES ($1, $2, $3, $4, $5::jsonb)",
+        [submission.id, submission.taskId, submission.workerId, submission.status, JSON.stringify(submission)]
+      );
+    }
+
+    for (const transaction of this.state.walletTransactions) {
+      await client.query(
+        "INSERT INTO ns_wallet_transactions (id, user_id, type, status, amount, raw) VALUES ($1, $2, $3, $4, $5, $6::jsonb)",
+        [transaction.id, transaction.userId, transaction.type, transaction.status, transaction.amount, JSON.stringify(transaction)]
+      );
+    }
+
+    for (const event of this.state.verificationEvents) {
+      await client.query(
+        "INSERT INTO ns_verification_events (id, task_id, worker_id, type, status, raw) VALUES ($1, $2, $3, $4, $5, $6::jsonb)",
+        [event.id, event.taskId, event.workerId, event.type, event.status, JSON.stringify(event)]
+      );
+    }
+
+    for (const chat of this.state.trackedChats) {
+      await client.query(
+        "INSERT INTO ns_tracked_chats (id, type, bot_status, can_verify_members, raw) VALUES ($1, $2, $3, $4, $5::jsonb)",
+        [chat.id, chat.type, chat.botStatus, chat.canVerifyMembers, JSON.stringify(chat)]
+      );
+    }
   }
 }
 

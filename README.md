@@ -150,7 +150,21 @@ For `telegram_join` tasks, buyers must provide a numeric chat ID. The bot watche
 
 For `website_visit` tasks, Neosence creates a tracking link at `/track/visit`. The tracking page runs the buyer-selected timer, calls `/track/complete`, and tries to auto-pay the worker. `Verify Now` remains as a cooldown-protected fallback.
 
+Website visit verification now blocks repeated completion from the same worker, repeated IP on the same task, and repeated device/user-agent patterns on the same task. Suspicious attempts are stored as failed verification events.
+
 For `quiz` tasks, the buyer's verification target is the correct answer/code. Workers press `Verify Now`, submit the answer in Telegram, and receive instant reward when it matches.
+
+For `in_app_code` tasks, the buyer's verification target is the correct in-app code. Workers press `Verify Now`, submit the code in Telegram, and receive instant reward when it matches.
+
+For `website_webhook`, `app_attribution`, and optional external `in_app_code` verification, buyer systems can call:
+
+```bash
+curl -X POST "$PUBLIC_URL/api/verify" \
+  -H "content-type: application/json" \
+  -d '{"taskId":"task_id","workerId":123456,"secret":"shared-secret","event":"signup_completed","proof":"api:event"}'
+```
+
+Set `WEBHOOK_SECRET` in Railway to use one global shared secret. If it is not set, Neosence uses the task verification target as the shared secret for that campaign.
 
 ## Review Flow
 
