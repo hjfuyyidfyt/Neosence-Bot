@@ -1,6 +1,7 @@
 import { Markup } from "telegraf";
 import type { Task, UserProfile } from "./types.js";
 import { getMessages } from "./messages.js";
+import type { LanguageCode } from "./messages.js";
 
 export function mainMenu(user: UserProfile) {
   const t = getMessages(user.language);
@@ -24,8 +25,8 @@ export function mainMenu(user: UserProfile) {
   ]);
 }
 
-export function modeMenu() {
-  const t = getMessages("en");
+export function modeMenu(language?: LanguageCode) {
+  const t = getMessages(language);
   return Markup.inlineKeyboard([
     [Markup.button.callback(t.menu.workAsFreelancer, "mode:freelancer")],
     [Markup.button.callback(t.menu.hireAsBuyer, "mode:buyer")]
@@ -36,10 +37,11 @@ export function taskButtons(tasks: Task[]) {
   return Markup.inlineKeyboard(tasks.map((task) => [Markup.button.callback(`${task.title} - ${task.rewardPerWorker} BDT`, `task:${task.id}`)]));
 }
 
-export function taskActionButtons(task: Task) {
+export function taskActionButtons(task: Task, language?: LanguageCode) {
+  const messages = getMessages(language);
   const buttons = task.approvalType === "manual"
-    ? [[Markup.button.callback("Submit Proof", `proof:${task.id}`)]]
-    : [[Markup.button.callback("Verify Now", `verify:${task.id}`)]];
+    ? [[Markup.button.callback(messages.buttons.submitProof, `proof:${task.id}`)]]
+    : [[Markup.button.callback(messages.buttons.verifyNow, `verify:${task.id}`)]];
   return Markup.inlineKeyboard(buttons);
 }
 

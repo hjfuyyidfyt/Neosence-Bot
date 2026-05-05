@@ -23,7 +23,7 @@ import {
   walletSummary
 } from "./services.js";
 import { formatTask, mainMenu, modeMenu, taskActionButtons } from "./ui.js";
-import { t } from "./messages.js";
+import { getMessages, t } from "./messages.js";
 import type { DepositRequest, Dispute, Submission, Task, TaskApprovalType, TaskStatus, TrackedChat, VerificationType, Withdrawal } from "./types.js";
 
 const store = createStore({ databaseUrl: config.databaseUrl, dataFile: config.dataFile });
@@ -82,7 +82,7 @@ bot.use(async (ctx, next) => {
 
   const user = store.snapshot().users.find((item) => item.id === ctx.from?.id);
   if (user?.isBanned) {
-    await ctx.reply("Your Neosence account is banned. Contact support if this is a mistake.");
+    await ctx.reply(getMessages(user.language).common.banned);
     return;
   }
 
@@ -93,11 +93,12 @@ bot.start(async (ctx) => {
   const wasExistingUser = store.snapshot().users.some((item) => item.id === ctx.from.id);
   const user = await ensureUser(ctx.from);
   const referralMessage = await maybeApplyReferral(getStartPayload(ctx.message.text), user.id, wasExistingUser);
+  const messages = getMessages(user.language);
   await ctx.reply(
     [
-      t.start.welcome,
+      messages.start.welcome,
       "",
-      `Current workspace: ${formatMode(user.mode)}.`,
+      `${messages.start.currentWorkspace} ${formatMode(user.mode)}.`,
       referralMessage
     ].filter(Boolean).join("\n"),
     mainMenu(user)
@@ -105,8 +106,9 @@ bot.start(async (ctx) => {
 });
 
 bot.command("mode", async (ctx) => {
-  await ensureUser(ctx.from);
-  await ctx.reply(t.start.chooseMode, modeMenu());
+  const user = await ensureUser(ctx.from);
+  const messages = getMessages(user.language);
+  await ctx.reply(messages.start.chooseMode, modeMenu(user.language));
 });
 
 bot.command("language", async (ctx) => {
@@ -135,13 +137,14 @@ bot.command("cancel", async (ctx) => {
   proofWaiters.delete(ctx.from.id);
   quizWaiters.delete(ctx.from.id);
   supportWaiters.delete(ctx.from.id);
-  await ctx.reply("Current draft/input cancelled.");
+  await ctx.reply(userMessages(ctx.from.id).common.currentInputCancelled);
 });
 
 bot.command("posttask", async (ctx) => {
   const user = await ensureUser(ctx.from);
+  const messages = getMessages(user.language);
   if (user.mode !== "buyer") {
-    await ctx.reply(t.common.switchToBuyer, mainMenu(user));
+    await ctx.reply(messages.common.switchToBuyer, mainMenu(user));
     return;
   }
 
@@ -154,7 +157,7 @@ bot.command("posttask", async (ctx) => {
 
   const parts = text.split("|").map((item) => item.trim());
   if (parts.length < 6) {
-    await ctx.reply("This command needs at least 6 fields. Send /posttask with no text to use the guided wizard.");
+    await ctx.reply(messages.taskWizard.commandFields);
     return;
   }
 
@@ -164,7 +167,7 @@ bot.command("posttask", async (ctx) => {
   const workerLimit = Number(workersRaw);
 
   if (!["manual", "auto"].includes(approvalType) || !Number.isFinite(rewardPerWorker) || !Number.isInteger(workerLimit)) {
-    await ctx.reply("Approval must be manual/auto. Reward must be a number and workers must be a whole number.");
+    await ctx.reply(messages.taskWizard.invalidCommandFields);
     return;
   }
 
@@ -196,7 +199,7 @@ bot.command("posttask", async (ctx) => {
     note: "MVP records escrow lock. Connect deposit validation before public launch."
   }));
 
-  await ctx.reply(`✅ Task published\n\n${formatTask(task)}\n\nEscrow locked: ${escrowRequired(task)} BDT`);
+  await ctx.reply(`${messages.taskWizard.published}\n\n${formatTask(task)}\n\nEscrow locked: ${escrowRequired(task)} BDT`);
 });
 
 bot.command("mytasks", async (ctx) => {
@@ -554,8 +557,9 @@ bot.action("earn:categories", async (ctx) => {
 bot.action("menu:post", async (ctx) => {
   await ctx.answerCbQuery();
   const user = await ensureUser(ctx.from);
+  const messages = getMessages(user.language);
   if (user.mode !== "buyer") {
-    await ctx.reply(t.common.switchToBuyer, mainMenu(user));
+    await ctx.reply(messages.common.switchToBuyer, mainMenu(user));
     return;
   }
   await startTaskWizard(ctx);
@@ -569,7 +573,9 @@ bot.action("menu:wallet", async (ctx) => {
 
 bot.action("menu:mode", async (ctx) => {
   await ctx.answerCbQuery();
-  await ctx.reply("Choose mode:", modeMenu());
+  const user = await ensureUser(ctx.from);
+  const messages = getMessages(user.language);
+  await ctx.reply(messages.start.chooseMode, modeMenu(user.language));
 });
 
 bot.action(/^language:(en|bn)$/, async (ctx) => {
@@ -582,7 +588,7 @@ bot.action(/^language:(en|bn)$/, async (ctx) => {
     updatedAt: new Date().toISOString()
   };
   await store.upsertUser(updatedUser);
-  const userMessages = t.language;
+  const userMessages = getMessages(language).language;
   await ctx.reply(
     language === "en"
       ? userMessages.englishSet
@@ -593,15 +599,16 @@ bot.action(/^language:(en|bn)$/, async (ctx) => {
 
 bot.action("menu:jobs", async (ctx) => {
   await ctx.answerCbQuery();
-  await ctx.reply("📌 Use /mytasks to see your accepted jobs and submissions.");
+  await ctx.reply(userMessages(ctx.from.id).earn.myJobsHelp);
 });
 
 bot.action("menu:campaigns", async (ctx) => {
   await ctx.answerCbQuery();
   const user = await ensureUser(ctx.from);
+  const messages = getMessages(user.language);
   const tasks = store.snapshot().tasks.filter((task) => task.buyerId === user.id);
   if (tasks.length === 0) {
-    await ctx.reply("No campaigns yet. Use Post Task to create your first campaign.", mainMenu(user));
+    await ctx.reply(messages.campaigns.none, mainMenu(user));
     return;
   }
 
@@ -611,18 +618,19 @@ bot.action("menu:campaigns", async (ctx) => {
 bot.action("menu:submissions", async (ctx) => {
   await ctx.answerCbQuery();
   const user = await ensureUser(ctx.from);
+  const messages = getMessages(user.language);
   const state = store.snapshot();
   const taskIds = new Set(state.tasks.filter((task) => task.buyerId === user.id).map((task) => task.id));
   const submissions = state.submissions.filter((submission) => taskIds.has(submission.taskId));
 
   if (submissions.length === 0) {
-    await ctx.reply("No campaign submissions yet.");
+    await ctx.reply(messages.campaigns.noSubmissions);
     return;
   }
 
   const pending = submissions.filter((submission) => submission.status === "pending");
   await ctx.reply([
-    "Recent campaign submissions:",
+    messages.campaigns.recentSubmissions,
     ...submissions.slice(0, 10).map((submission) => `- ${submission.id}: ${submission.status}, worker ${submission.workerId}, ${submission.rewardAmount} BDT`)
   ].join("\n"), buyerSubmissionKeyboard(pending));
 });
@@ -654,7 +662,7 @@ bot.action("menu:language", async (ctx) => {
 bot.action("menu:support", async (ctx) => {
   await ctx.answerCbQuery();
   supportWaiters.add(ctx.from.id);
-  await ctx.reply(t.support.prompt);
+  await ctx.reply(userMessages(ctx.from.id).support.prompt);
 });
 
 bot.action("noop", async (ctx) => {
@@ -688,23 +696,25 @@ bot.action(/^mode:(freelancer|buyer)$/, async (ctx) => {
 
 bot.action(/^wizard:approval:(manual|auto)$/, async (ctx) => {
   await ctx.answerCbQuery();
+  const messages = userMessages(ctx.from.id);
   const draft = getTaskDraft(ctx.from.id);
   if (!draft) {
-    await ctx.reply(t.common.draftExpired);
+    await ctx.reply(messages.common.draftExpired);
     return;
   }
 
   draft.approvalType = ctx.match[1] as TaskApprovalType;
   draft.step = "reward";
   taskDrafts.set(ctx.from.id, draft);
-  await ctx.reply(t.taskWizard.enterReward);
+  await ctx.reply(messages.taskWizard.enterReward);
 });
 
 bot.action(/^wizard:type:(telegram_join|website_visit|quiz|manual_proof|app_task|custom)$/, async (ctx) => {
   await ctx.answerCbQuery();
+  const messages = userMessages(ctx.from.id);
   const draft = getTaskDraft(ctx.from.id);
   if (!draft) {
-    await ctx.reply(t.common.draftExpired);
+    await ctx.reply(messages.common.draftExpired);
     return;
   }
 
@@ -712,18 +722,19 @@ bot.action(/^wizard:type:(telegram_join|website_visit|quiz|manual_proof|app_task
   taskDrafts.set(ctx.from.id, draft);
 
   if (draft.verificationType) {
-    await ctx.reply(verificationTargetPrompt(draft.verificationType));
+    await ctx.reply(verificationTargetPrompt(draft.verificationType, messages));
     return;
   }
 
-  await ctx.reply("Task title likho.");
+  await ctx.reply(messages.taskWizard.enterTitle);
 });
 
 bot.action(/^wizard:category:(telegram|website|app|social|survey|data_entry|review|quiz|custom)$/, async (ctx) => {
   await ctx.answerCbQuery();
+  const messages = userMessages(ctx.from.id);
   const draft = getTaskDraft(ctx.from.id);
   if (!draft) {
-    await ctx.reply("Task draft expired. /posttask diye abar shuru koro.");
+    await ctx.reply(messages.common.draftExpired);
     return;
   }
 
@@ -732,14 +743,15 @@ bot.action(/^wizard:category:(telegram|website|app|social|survey|data_entry|revi
   draft.instructions = defaultInstructionForCategory(draft.category);
   draft.step = "task_type";
   taskDrafts.set(ctx.from.id, draft);
-  await ctx.reply(t.taskWizard.chooseVerification, verificationMethodKeyboard(draft.category));
+  await ctx.reply(messages.taskWizard.chooseVerification, verificationMethodKeyboard(draft.category, messages));
 });
 
 bot.action(/^wizard:method:(auto_join|timer_visit|quiz_answer|manual_proof|webhook|app_tracking|in_app_code)$/, async (ctx) => {
   await ctx.answerCbQuery();
+  const messages = userMessages(ctx.from.id);
   const draft = getTaskDraft(ctx.from.id);
   if (!draft?.category) {
-    await ctx.reply(t.common.draftExpired);
+    await ctx.reply(messages.common.draftExpired);
     return;
   }
 
@@ -747,57 +759,61 @@ bot.action(/^wizard:method:(auto_join|timer_visit|quiz_answer|manual_proof|webho
   taskDrafts.set(ctx.from.id, draft);
 
   if (draft.verificationType) {
-    await ctx.reply(verificationTargetPrompt(draft.verificationType));
+    await ctx.reply(verificationTargetPrompt(draft.verificationType, messages));
     return;
   }
 
-  await ctx.reply(t.taskWizard.enterTitle);
+  await ctx.reply(messages.taskWizard.enterTitle);
 });
 
 bot.action("wizard:instruction:skip", async (ctx) => {
   await ctx.answerCbQuery();
+  const messages = userMessages(ctx.from.id);
   const draft = getTaskDraft(ctx.from.id);
   if (!draft) {
-    await ctx.reply(t.common.draftExpired);
+    await ctx.reply(messages.common.draftExpired);
     return;
   }
   draft.step = "confirm";
   taskDrafts.set(ctx.from.id, draft);
-  await ctx.reply(formatDraftReview(draft), confirmTaskKeyboard());
+  await ctx.reply(formatDraftReview(draft, messages), confirmTaskKeyboard(messages));
 });
 
 bot.action("wizard:instruction:edit", async (ctx) => {
   await ctx.answerCbQuery();
+  const messages = userMessages(ctx.from.id);
   const draft = getTaskDraft(ctx.from.id);
   if (!draft) {
-    await ctx.reply(t.common.draftExpired);
+    await ctx.reply(messages.common.draftExpired);
     return;
   }
   draft.step = "instructions";
   taskDrafts.set(ctx.from.id, draft);
-  await ctx.reply(t.taskWizard.editInstruction);
+  await ctx.reply(messages.taskWizard.editInstruction);
 });
 
 bot.action(/^wizard:verification:(telegram_join|website_visit|website_webhook|app_attribution|in_app_code|quiz)$/, async (ctx) => {
   await ctx.answerCbQuery();
+  const messages = userMessages(ctx.from.id);
   const draft = getTaskDraft(ctx.from.id);
   if (!draft) {
-    await ctx.reply(t.common.draftExpired);
+    await ctx.reply(messages.common.draftExpired);
     return;
   }
 
   draft.verificationType = ctx.match[1] as VerificationType;
   draft.step = "target";
   taskDrafts.set(ctx.from.id, draft);
-  await ctx.reply(verificationTargetPrompt(draft.verificationType));
+  await ctx.reply(verificationTargetPrompt(draft.verificationType, messages));
 });
 
 bot.action("wizard:confirm", async (ctx) => {
   await ctx.answerCbQuery();
   const user = await ensureUser(ctx.from);
+  const messages = getMessages(user.language);
   const draft = getTaskDraft(ctx.from.id);
   if (!draft || !isCompleteDraft(draft)) {
-    await ctx.reply("This draft is incomplete. Start again with /posttask.");
+    await ctx.reply(messages.common.incompleteDraft);
     return;
   }
 
@@ -830,14 +846,14 @@ bot.action("wizard:confirm", async (ctx) => {
   }));
   taskDrafts.delete(ctx.from.id);
 
-  await ctx.reply(`${t.taskWizard.published}\n\n${formatTask(task)}\n\nEscrow locked: ${escrowRequired(task)} BDT`, mainMenu(user));
+  await ctx.reply(`${messages.taskWizard.published}\n\n${formatTask(task)}\n\nEscrow locked: ${escrowRequired(task)} BDT`, mainMenu(user));
 });
 
 bot.action("wizard:cancel", async (ctx) => {
   await ctx.answerCbQuery();
   taskDrafts.delete(ctx.from.id);
   const user = await ensureUser(ctx.from);
-  await ctx.reply(t.taskWizard.cancelled, mainMenu(user));
+  await ctx.reply(getMessages(user.language).taskWizard.cancelled, mainMenu(user));
 });
 
 bot.action(/^submission:view:(.+)$/, async (ctx) => {
@@ -856,7 +872,7 @@ bot.action(/^submission:view:(.+)$/, async (ctx) => {
   }
 
   if (task.buyerId !== user.id && !isAdmin(user.id)) {
-    await ctx.reply("Ei submission dekhar permission nei.");
+    await ctx.reply("You do not have permission to view this submission.");
     return;
   }
 
@@ -1036,7 +1052,7 @@ bot.action(/^proof:(.+)$/, async (ctx) => {
   await ctx.answerCbQuery();
   await ensureUser(ctx.from);
   proofWaiters.set(ctx.from.id, ctx.match[1]);
-  await ctx.reply("Proof pathao: screenshot caption, text, username, or link. Next message proof hisebe save hobe.");
+  await ctx.reply("Send proof now: screenshot caption, text, username, or link. Your next message will be saved as proof.");
 });
 
 bot.action(/^verify:(.+)$/, async (ctx) => {
@@ -1045,7 +1061,7 @@ bot.action(/^verify:(.+)$/, async (ctx) => {
   const cooldownKey = `${ctx.from.id}:${ctx.match[1]}`;
   const lastVerifyAt = verifyCooldowns.get(cooldownKey) ?? 0;
   if (Date.now() - lastVerifyAt < VERIFY_COOLDOWN_MS) {
-    await ctx.reply("Ektu wait koro, Verify Now abar try korte 15 seconds gap lagbe.");
+    await ctx.reply("Please wait. Verify Now has a 15-second cooldown.");
     return;
   }
   verifyCooldowns.set(cooldownKey, Date.now());
@@ -1067,11 +1083,11 @@ bot.action(/^verify:(.+)$/, async (ctx) => {
 
   if (task.verificationType === "quiz") {
     quizWaiters.set(ctx.from.id, task.id);
-    await ctx.reply("Quiz answer/code pathao. Correct hole instant reward add hobe.");
+    await ctx.reply("Send the quiz answer/code. Correct answers are rewarded instantly.");
     return;
   }
 
-  await ctx.reply("Ei auto verification integration ekhono connected na. MVP te telegram_join ready, website/app webhook layer next step.");
+  await ctx.reply("This auto verification integration is not connected yet. Telegram join and website timer verification are ready now.");
 });
 
 bot.on("message", async (ctx, next) => {
@@ -1123,22 +1139,29 @@ async function ensureUser(from: TelegramFrom) {
   return user;
 }
 
+function userMessages(userId: number) {
+  const user = store.snapshot().users.find((item) => item.id === userId);
+  return getMessages(user?.language);
+}
+
 async function showEarn(ctx: Context & { from: TelegramFrom }) {
   const userId = ctx.from.id;
+  const messages = userMessages(userId);
   const tasks = visibleTasks(store.snapshot(), userId);
   if (tasks.length === 0) {
-    await ctx.reply(t.common.noTasksAvailable);
+    await ctx.reply(messages.common.noTasksAvailable);
     return;
   }
-  await ctx.reply(t.earn.chooseCategory, earnCategoryKeyboard(tasks));
+  await ctx.reply(messages.earn.chooseCategory, earnCategoryKeyboard(tasks));
 }
 
 async function showEarnCategory(ctx: Context & { from: TelegramFrom }, category: string, page: number) {
   const allTasks = visibleTasks(store.snapshot(), ctx.from.id);
   const filtered = category === "all" ? allTasks : allTasks.filter((task) => task.category === category);
+  const messages = userMessages(ctx.from.id);
   if (filtered.length === 0) {
-    await ctx.reply(t.earn.noCategoryTasks, Markup.inlineKeyboard([
-      [Markup.button.callback(t.earn.backToCategories, "earn:categories")]
+    await ctx.reply(messages.earn.noCategoryTasks, Markup.inlineKeyboard([
+      [Markup.button.callback(messages.earn.backToCategories, "earn:categories")]
     ]));
     return;
   }
@@ -1148,8 +1171,11 @@ async function showEarnCategory(ctx: Context & { from: TelegramFrom }, category:
   const safePage = Math.min(Math.max(page, 0), totalPages - 1);
   const tasks = filtered.slice(safePage * pageSize, safePage * pageSize + pageSize);
   await ctx.reply(
-    `💼 ${categoryLabel(category)} Tasks\nPage ${safePage + 1}/${totalPages}`,
-    earnTaskListKeyboard(tasks, category, safePage, totalPages)
+    messages.earn.taskListTitle
+      .replace("{category}", categoryLabel(category))
+      .replace("{page}", String(safePage + 1))
+      .replace("{totalPages}", String(totalPages)),
+    earnTaskListKeyboard(tasks, category, safePage, totalPages, messages)
   );
 }
 
@@ -1217,15 +1243,15 @@ function earnCategoryKeyboard(tasks: Task[]) {
   return Markup.inlineKeyboard(rows);
 }
 
-function earnTaskListKeyboard(tasks: Task[], category: string, page: number, totalPages: number) {
+function earnTaskListKeyboard(tasks: Task[], category: string, page: number, totalPages: number, messages = t) {
   const rows = tasks.map((task) => [
     Markup.button.callback(`${task.title} - ${task.rewardPerWorker} BDT`, `task:${task.id}`)
   ]);
   const nav = [];
-  if (page > 0) nav.push(Markup.button.callback("Previous", `earn:category:${category}:${page - 1}`));
-  if (page + 1 < totalPages) nav.push(Markup.button.callback("Next", `earn:category:${category}:${page + 1}`));
+  if (page > 0) nav.push(Markup.button.callback(messages.buttons.previous, `earn:category:${category}:${page - 1}`));
+  if (page + 1 < totalPages) nav.push(Markup.button.callback(messages.buttons.next, `earn:category:${category}:${page + 1}`));
   if (nav.length > 0) rows.push(nav);
-  rows.push([Markup.button.callback(t.earn.backToCategories, "earn:categories")]);
+  rows.push([Markup.button.callback(messages.earn.backToCategories, "earn:categories")]);
   return Markup.inlineKeyboard(rows);
 }
 
@@ -1419,7 +1445,7 @@ function formatReferralStats(userId: number, botUsername?: string): string {
 async function handleSupportMessage(ctx: Context & { from: TelegramFrom; message: unknown }) {
   const message = extractText(ctx.message);
   if (!message) {
-    await ctx.reply("Support ticket-er jonno text message pathao.");
+    await ctx.reply("Send a text message for the support ticket.");
     return;
   }
 
@@ -1460,14 +1486,15 @@ async function closeSupportTicket(ticketId: string) {
 }
 
 async function startTaskWizard(ctx: Context & { from: TelegramFrom }) {
+  const messages = userMessages(ctx.from.id);
   setTaskDraft(ctx.from.id, { step: "task_type" });
-  await ctx.reply(t.taskWizard.chooseCategory, Markup.inlineKeyboard([
-    [Markup.button.callback("📢 Telegram", "wizard:category:telegram"), Markup.button.callback("🌐 Website", "wizard:category:website")],
-    [Markup.button.callback("📱 App", "wizard:category:app"), Markup.button.callback("📣 Social", "wizard:category:social")],
-    [Markup.button.callback("📝 Survey", "wizard:category:survey"), Markup.button.callback("⌨️ Data Entry", "wizard:category:data_entry")],
-    [Markup.button.callback("⭐ Review", "wizard:category:review"), Markup.button.callback("✅ Quiz / Code", "wizard:category:quiz")],
-    [Markup.button.callback("⚙️ Custom", "wizard:category:custom")],
-    [Markup.button.callback(t.common.cancel, "wizard:cancel")]
+  await ctx.reply(messages.taskWizard.chooseCategory, Markup.inlineKeyboard([
+    [Markup.button.callback(`📢 ${messages.categories.telegram}`, "wizard:category:telegram"), Markup.button.callback(`🌐 ${messages.categories.website}`, "wizard:category:website")],
+    [Markup.button.callback(`📱 ${messages.categories.app}`, "wizard:category:app"), Markup.button.callback(`📣 ${messages.categories.social}`, "wizard:category:social")],
+    [Markup.button.callback(`📝 ${messages.categories.survey}`, "wizard:category:survey"), Markup.button.callback(`⌨️ ${messages.categories.data_entry}`, "wizard:category:data_entry")],
+    [Markup.button.callback(`⭐ ${messages.categories.review}`, "wizard:category:review"), Markup.button.callback(`✅ ${messages.categories.quiz}`, "wizard:category:quiz")],
+    [Markup.button.callback(`⚙️ ${messages.categories.custom}`, "wizard:category:custom")],
+    [Markup.button.callback(messages.common.cancel, "wizard:cancel")]
   ]));
 }
 
@@ -1525,26 +1552,26 @@ function applyTaskTypeTemplate(draft: TaskDraft, type: string) {
   draft.step = "title";
 }
 
-function verificationMethodKeyboard(category: string) {
+function verificationMethodKeyboard(category: string, messages = t) {
   const rows: Array<Array<ReturnType<typeof Markup.button.callback>>> = [];
   if (category === "telegram") {
-    rows.push([Markup.button.callback("Auto Join", "wizard:method:auto_join")]);
-    rows.push([Markup.button.callback("Manual Proof", "wizard:method:manual_proof")]);
+    rows.push([Markup.button.callback(messages.verificationMethods.autoJoin, "wizard:method:auto_join")]);
+    rows.push([Markup.button.callback(messages.verificationMethods.manualProof, "wizard:method:manual_proof")]);
   } else if (category === "website") {
-    rows.push([Markup.button.callback("Timer Visit", "wizard:method:timer_visit")]);
-    rows.push([Markup.button.callback("Manual Proof", "wizard:method:manual_proof")]);
-    rows.push([Markup.button.callback("Webhook/API", "wizard:method:webhook")]);
+    rows.push([Markup.button.callback(messages.verificationMethods.timerVisit, "wizard:method:timer_visit")]);
+    rows.push([Markup.button.callback(messages.verificationMethods.manualProof, "wizard:method:manual_proof")]);
+    rows.push([Markup.button.callback(messages.verificationMethods.webhook, "wizard:method:webhook")]);
   } else if (category === "app") {
-    rows.push([Markup.button.callback("Manual Proof", "wizard:method:manual_proof")]);
-    rows.push([Markup.button.callback("App Tracking", "wizard:method:app_tracking")]);
-    rows.push([Markup.button.callback("In-App Code", "wizard:method:in_app_code")]);
+    rows.push([Markup.button.callback(messages.verificationMethods.manualProof, "wizard:method:manual_proof")]);
+    rows.push([Markup.button.callback(messages.verificationMethods.appTracking, "wizard:method:app_tracking")]);
+    rows.push([Markup.button.callback(messages.verificationMethods.inAppCode, "wizard:method:in_app_code")]);
   } else if (category === "quiz") {
-    rows.push([Markup.button.callback("Auto Answer", "wizard:method:quiz_answer")]);
-    rows.push([Markup.button.callback("Manual Proof", "wizard:method:manual_proof")]);
+    rows.push([Markup.button.callback(messages.verificationMethods.autoAnswer, "wizard:method:quiz_answer")]);
+    rows.push([Markup.button.callback(messages.verificationMethods.manualProof, "wizard:method:manual_proof")]);
   } else {
-    rows.push([Markup.button.callback("Manual Proof", "wizard:method:manual_proof")]);
+    rows.push([Markup.button.callback(messages.verificationMethods.manualProof, "wizard:method:manual_proof")]);
   }
-  rows.push([Markup.button.callback("Cancel", "wizard:cancel")]);
+  rows.push([Markup.button.callback(messages.common.cancel, "wizard:cancel")]);
   return Markup.inlineKeyboard(rows);
 }
 
@@ -1674,9 +1701,10 @@ async function notifyWaitingDraftsForChat(chat: TrackedChat) {
 }
 
 async function handleTaskWizardMessage(ctx: Context & { from: TelegramFrom; message: unknown }, draft: TaskDraft) {
+  const messages = userMessages(ctx.from.id);
   const text = extractText(ctx.message);
   if (!text) {
-    await ctx.reply("Please send a text answer.");
+    await ctx.reply(messages.common.sendText);
     return;
   }
 
@@ -1685,13 +1713,13 @@ async function handleTaskWizardMessage(ctx: Context & { from: TelegramFrom; mess
     if (draft.category && draft.approvalType) {
       draft.step = "instructions";
       taskDrafts.set(ctx.from.id, draft);
-      await ctx.reply("Write the instruction, or send /skip to use the template.");
+      await ctx.reply(messages.taskWizard.instructionOrTemplate);
       return;
     }
 
     draft.step = "category";
     taskDrafts.set(ctx.from.id, draft);
-    await ctx.reply("Enter a category. Example: telegram, website, app, social, survey");
+    await ctx.reply(messages.taskWizard.enterCategory);
     return;
   }
 
@@ -1699,10 +1727,10 @@ async function handleTaskWizardMessage(ctx: Context & { from: TelegramFrom; mess
     draft.category = text.slice(0, 40).toLowerCase();
     draft.step = "approval";
     taskDrafts.set(ctx.from.id, draft);
-    await ctx.reply("Choose an approval method:", Markup.inlineKeyboard([
-      [Markup.button.callback("Manual Approval", "wizard:approval:manual")],
-      [Markup.button.callback("Auto Verification", "wizard:approval:auto")],
-      [Markup.button.callback("Cancel", "wizard:cancel")]
+    await ctx.reply(messages.taskWizard.chooseApproval, Markup.inlineKeyboard([
+      [Markup.button.callback(messages.buttons.manualApproval, "wizard:approval:manual")],
+      [Markup.button.callback(messages.buttons.autoVerification, "wizard:approval:auto")],
+      [Markup.button.callback(messages.common.cancel, "wizard:cancel")]
     ]));
     return;
   }
@@ -1710,42 +1738,42 @@ async function handleTaskWizardMessage(ctx: Context & { from: TelegramFrom; mess
   if (draft.step === "reward") {
     const reward = Number(text);
     if (!Number.isFinite(reward) || reward <= 0) {
-      await ctx.reply("Enter a valid reward amount. Example: 5");
+      await ctx.reply(messages.taskWizard.invalidReward);
       return;
     }
     draft.rewardPerWorker = reward;
     draft.step = "workers";
     taskDrafts.set(ctx.from.id, draft);
-    await ctx.reply(t.taskWizard.enterWorkers);
+    await ctx.reply(messages.taskWizard.enterWorkers);
     return;
   }
 
   if (draft.step === "workers") {
     const workerLimit = Number(text);
     if (!Number.isInteger(workerLimit) || workerLimit <= 0) {
-      await ctx.reply("Enter a valid worker count. Example: 100");
+      await ctx.reply(messages.taskWizard.invalidWorkers);
       return;
     }
     draft.workerLimit = workerLimit;
     if (draft.instructions) {
       taskDrafts.set(ctx.from.id, draft);
       await ctx.reply([
-        t.taskWizard.templateReadyTitle,
+        messages.taskWizard.templateReadyTitle,
         "",
         draft.instructions,
         "",
-        t.taskWizard.templateChoice
+        messages.taskWizard.templateChoice
       ].join("\n"), Markup.inlineKeyboard([
-        [Markup.button.callback("Use Template", "wizard:instruction:skip")],
-        [Markup.button.callback("Edit Instruction", "wizard:instruction:edit")],
-        [Markup.button.callback("Cancel", "wizard:cancel")]
+        [Markup.button.callback(messages.buttons.useTemplate, "wizard:instruction:skip")],
+        [Markup.button.callback(messages.buttons.editInstruction, "wizard:instruction:edit")],
+        [Markup.button.callback(messages.common.cancel, "wizard:cancel")]
       ]));
       return;
     }
 
     draft.step = "instructions";
     taskDrafts.set(ctx.from.id, draft);
-    await ctx.reply(t.taskWizard.enterInstruction);
+    await ctx.reply(messages.taskWizard.enterInstruction);
     return;
   }
 
@@ -1757,14 +1785,14 @@ async function handleTaskWizardMessage(ctx: Context & { from: TelegramFrom; mess
     if (draft.approvalType === "auto") {
       draft.step = "verification";
       taskDrafts.set(ctx.from.id, draft);
-      await ctx.reply("Auto verification type choose koro:", Markup.inlineKeyboard([
-        [Markup.button.callback("Telegram Join", "wizard:verification:telegram_join")],
-        [Markup.button.callback("Website Visit", "wizard:verification:website_visit")],
-        [Markup.button.callback("Website Webhook", "wizard:verification:website_webhook")],
-        [Markup.button.callback("App Attribution", "wizard:verification:app_attribution")],
-        [Markup.button.callback("In-App Code", "wizard:verification:in_app_code")],
-        [Markup.button.callback("Quiz", "wizard:verification:quiz")],
-        [Markup.button.callback("Cancel", "wizard:cancel")]
+      await ctx.reply(messages.taskWizard.autoVerificationType, Markup.inlineKeyboard([
+        [Markup.button.callback(messages.verificationMethods.telegramJoin, "wizard:verification:telegram_join")],
+        [Markup.button.callback(messages.verificationMethods.websiteVisit, "wizard:verification:website_visit")],
+        [Markup.button.callback(messages.verificationMethods.websiteWebhook, "wizard:verification:website_webhook")],
+        [Markup.button.callback(messages.verificationMethods.appAttribution, "wizard:verification:app_attribution")],
+        [Markup.button.callback(messages.verificationMethods.inAppCode, "wizard:verification:in_app_code")],
+        [Markup.button.callback(messages.verificationMethods.quiz, "wizard:verification:quiz")],
+        [Markup.button.callback(messages.common.cancel, "wizard:cancel")]
       ]));
       return;
     }
@@ -1772,20 +1800,20 @@ async function handleTaskWizardMessage(ctx: Context & { from: TelegramFrom; mess
     if (!draft.rewardPerWorker) {
       draft.step = "reward";
       taskDrafts.set(ctx.from.id, draft);
-      await ctx.reply("Reward per worker koto BDT? Example: 5");
+      await ctx.reply(messages.taskWizard.enterReward);
       return;
     }
 
     if (!draft.workerLimit) {
       draft.step = "workers";
       taskDrafts.set(ctx.from.id, draft);
-      await ctx.reply("Koto jon worker lagbe? Example: 100");
+      await ctx.reply(messages.taskWizard.enterWorkers);
       return;
     }
 
     draft.step = "confirm";
     taskDrafts.set(ctx.from.id, draft);
-    await ctx.reply(formatDraftReview(draft), confirmTaskKeyboard());
+    await ctx.reply(formatDraftReview(draft, messages), confirmTaskKeyboard(messages));
     return;
   }
 
@@ -1793,7 +1821,7 @@ async function handleTaskWizardMessage(ctx: Context & { from: TelegramFrom; mess
     if (draft.verificationType === "telegram_join") {
       const chatId = Number(text);
       if (!Number.isFinite(chatId)) {
-      await ctx.reply("Enter the numeric channel/group chat ID.\n\nExample: -1001234567890");
+        await ctx.reply(messages.taskWizard.invalidTelegramChatId);
         return;
       }
 
@@ -1802,10 +1830,8 @@ async function handleTaskWizardMessage(ctx: Context & { from: TelegramFrom; mess
         draft.verificationTarget = String(chatId);
         taskDrafts.set(ctx.from.id, draft);
         await ctx.reply([
-        "I cannot access this chat yet.",
-        "Add this bot as an admin in the target channel/group. I will detect it automatically.",
+          messages.taskWizard.telegramAdminMissing,
           `Waiting chat ID: ${chatId}`,
-        "After adding the bot, send the same ID again to continue."
         ].join("\n"));
         return;
       }
@@ -1817,7 +1843,7 @@ async function handleTaskWizardMessage(ctx: Context & { from: TelegramFrom; mess
     if (draft.verificationType === "website_visit") {
       draft.step = "website_timer";
       taskDrafts.set(ctx.from.id, draft);
-      await ctx.reply("Enter visit timer in seconds.\n\nExamples: 30, 60, 120");
+      await ctx.reply(messages.taskWizard.websiteTimerPrompt);
       return;
     }
 
@@ -1828,7 +1854,7 @@ async function handleTaskWizardMessage(ctx: Context & { from: TelegramFrom; mess
   if (draft.step === "website_timer") {
     const seconds = Number(text);
     if (!Number.isInteger(seconds) || seconds < 5 || seconds > 600) {
-      await ctx.reply("Enter a valid timer between 5 and 600 seconds.");
+      await ctx.reply(messages.taskWizard.invalidWebsiteTimer);
       return;
     }
     draft.websiteVisitSeconds = seconds;
@@ -1836,41 +1862,42 @@ async function handleTaskWizardMessage(ctx: Context & { from: TelegramFrom; mess
     return;
   }
 
-  await ctx.reply("Use the buttons for this step, or press Cancel.");
+  await ctx.reply(messages.taskWizard.useButtons);
 }
 
-function confirmTaskKeyboard() {
+function confirmTaskKeyboard(messages = t) {
   return Markup.inlineKeyboard([
-    [Markup.button.callback("Publish Task", "wizard:confirm")],
-    [Markup.button.callback("Cancel", "wizard:cancel")]
+    [Markup.button.callback(messages.buttons.publishTask, "wizard:confirm")],
+    [Markup.button.callback(messages.common.cancel, "wizard:cancel")]
   ]);
 }
 
 async function promptNextCommercialStep(ctx: Context & { from: TelegramFrom }, draft: TaskDraft) {
+  const messages = userMessages(ctx.from.id);
   if (!draft.rewardPerWorker) {
     draft.step = "reward";
     taskDrafts.set(ctx.from.id, draft);
-    await ctx.reply("Reward per worker koto BDT? Example: 5");
+    await ctx.reply(messages.taskWizard.enterReward);
     return;
   }
 
   if (!draft.workerLimit) {
     draft.step = "workers";
     taskDrafts.set(ctx.from.id, draft);
-    await ctx.reply("Koto jon worker lagbe? Example: 100");
+    await ctx.reply(messages.taskWizard.enterWorkers);
     return;
   }
 
   draft.step = "confirm";
   taskDrafts.set(ctx.from.id, draft);
-  await ctx.reply(formatDraftReview(draft), confirmTaskKeyboard());
+  await ctx.reply(formatDraftReview(draft, messages), confirmTaskKeyboard(messages));
 }
 
-function formatDraftReview(draft: TaskDraft): string {
+function formatDraftReview(draft: TaskDraft, messages = t): string {
   const rewardTotal = (draft.rewardPerWorker ?? 0) * (draft.workerLimit ?? 0);
   const fee = rewardTotal * (config.platformFeePercent / 100);
   return [
-    "Review task before publishing:",
+    messages.taskWizard.reviewTitle,
     "",
     `Title: ${draft.title}`,
     `Category: ${draft.category}`,
@@ -1887,18 +1914,13 @@ function formatDraftReview(draft: TaskDraft): string {
   ].filter(Boolean).join("\n");
 }
 
-function verificationTargetPrompt(type: VerificationType): string {
-  if (type === "telegram_join") return [
-    "Target channel/group numeric chat ID dao.",
-    "Bot-ke oi channel/group-er admin banate hobe.",
-    "Bot admin hole backend automatically added list-e save korbe.",
-    "Example: -1001234567890"
-  ].join("\n");
-  if (type === "website_visit") return "Tracking target URL dao. Example: https://example.com";
-  if (type === "website_webhook") return "Webhook/event name or target URL dao.";
-  if (type === "app_attribution") return "App/package/deep link target dao.";
-  if (type === "in_app_code") return "Verification code rule or target app info dao.";
-  return "Correct quiz answer/code dao. Worker same answer dile auto reward pabe.";
+function verificationTargetPrompt(type: VerificationType, messages = t): string {
+  if (type === "telegram_join") return messages.taskWizard.telegramChatIdPrompt;
+  if (type === "website_visit") return messages.taskWizard.websiteTargetPrompt;
+  if (type === "website_webhook") return messages.taskWizard.webhookTargetPrompt;
+  if (type === "app_attribution") return messages.taskWizard.appTargetPrompt;
+  if (type === "in_app_code") return messages.taskWizard.inAppCodePrompt;
+  return messages.taskWizard.quizAnswerPrompt;
 }
 
 function isCompleteDraft(draft: TaskDraft): draft is Required<Pick<TaskDraft, "title" | "category" | "approvalType" | "rewardPerWorker" | "workerLimit" | "instructions">> & TaskDraft {
@@ -2053,7 +2075,7 @@ function assertCanReviewSubmission(submissionId: string, reviewerId: number) {
   const task = state.tasks.find((item) => item.id === submission.taskId);
   if (!task) throw new Error("Task not found");
   if (task.buyerId !== reviewerId && !isAdmin(reviewerId)) {
-    throw new Error("Ei submission review korar permission nei.");
+    throw new Error("You do not have permission to review this submission.");
   }
 }
 
@@ -2122,7 +2144,7 @@ async function openDispute(submissionId: string, workerId: number, reason: strin
   const state = store.snapshot();
   const submission = state.submissions.find((item) => item.id === submissionId);
   if (!submission) throw new Error("Submission not found.");
-  if (submission.workerId !== workerId) throw new Error("Ei submission-er worker apni na.");
+  if (submission.workerId !== workerId) throw new Error("This submission does not belong to you.");
   if (submission.status !== "rejected") throw new Error("Only rejected submissions can be disputed.");
 
   const task = state.tasks.find((item) => item.id === submission.taskId);
@@ -2131,7 +2153,7 @@ async function openDispute(submissionId: string, workerId: number, reason: strin
   const alreadyOpen = state.disputes.some(
     (dispute) => dispute.submissionId === submission.id && dispute.status === "open"
   );
-  if (alreadyOpen) throw new Error("Ei submission-er dispute already open ache.");
+  if (alreadyOpen) throw new Error("A dispute is already open for this submission.");
 
   const dispute = createDispute({ submission, task, reason });
   await store.addDispute(dispute);
@@ -2287,7 +2309,7 @@ function getReviewableTask(taskId: string, userId: number): Task {
   const task = store.snapshot().tasks.find((item) => item.id === taskId);
   if (!task) throw new Error("Campaign not found.");
   if (task.buyerId !== userId && !isAdmin(userId)) {
-    throw new Error("Ei campaign manage korar permission nei.");
+    throw new Error("You do not have permission to manage this campaign.");
   }
   return task;
 }
@@ -2316,7 +2338,7 @@ async function cancelCampaign(taskId: string, userId: number) {
     (submission) => submission.taskId === task.id && submission.status === "pending"
   ).length;
   if (pendingCount > 0) {
-    throw new Error("Cancel korar age pending submissions approve/reject koro.");
+    throw new Error("Approve or reject pending submissions before cancelling this campaign.");
   }
 
   const refundAmount = campaignOutstandingEscrow(task.id);
@@ -2361,7 +2383,7 @@ function assertCampaignTargetAllowed(newTask: Task) {
     task.verificationTarget === newTask.verificationTarget
   );
   if (duplicate) {
-    throw new Error(`Same target-e active campaign already ache: ${duplicate.title}`);
+    throw new Error(`An active campaign already uses this same target: ${duplicate.title}`);
   }
 }
 
@@ -2538,13 +2560,13 @@ async function verifyTelegramJoin(ctx: Context & { from: TelegramFrom }, taskId:
     const chatId = Number(task.verificationTarget);
     const trackedChat = store.snapshot().trackedChats.find((chat) => chat.id === chatId);
     if (!trackedChat?.canVerifyMembers) {
-      await ctx.reply("Bot ekhono ei channel/group-er admin access pache na. Buyer-ke bot admin korte bolo.");
+      await ctx.reply("The bot does not have admin access to this channel/group yet. Ask the buyer to add the bot as an admin.");
       return;
     }
     const member = await ctx.telegram.getChatMember(chatId, ctx.from.id);
     const passed = ["member", "administrator", "creator"].includes(member.status);
     if (!passed) {
-      await ctx.reply("Membership verify hoyni. Join kore abar Verify Now press koro.");
+      await ctx.reply("Membership was not verified. Join the channel/group, then press Verify Now again.");
       return;
     }
 
@@ -2574,7 +2596,7 @@ async function verifyTelegramJoin(ctx: Context & { from: TelegramFrom }, taskId:
     }));
     await ctx.reply(`Verified. ${task.rewardPerWorker} BDT added to your wallet.`);
   } catch (error) {
-    await ctx.reply(`Verification failed. Bot ke target channel/group-e add kora ache kina check koro. ${(error as Error).message}`);
+    await ctx.reply(`Verification failed. Check that the bot is added to the target channel/group. ${(error as Error).message}`);
   }
 }
 
@@ -2598,8 +2620,8 @@ async function verifyWebsiteVisit(ctx: Context & { from: TelegramFrom }, taskId:
 
   if (!passed) {
     await ctx.reply([
-      "Website visit ekhono track hoyni.",
-      "Ei link open koro, tarpor Telegram-e fire Verify Now abar press koro:",
+      "Website visit has not been tracked yet.",
+      "Open this link, then return to Telegram and press Verify Now again:",
       websiteVisitTrackingUrl(task.id, ctx.from.id)
     ].join("\n"));
     return;
@@ -2612,7 +2634,7 @@ async function verifyWebsiteVisit(ctx: Context & { from: TelegramFrom }, taskId:
 async function handleQuizAnswer(ctx: Context & { from: TelegramFrom; message: unknown }, taskId: string) {
   const answer = extractText(ctx.message);
   if (!answer) {
-    await ctx.reply("Text answer pathao.");
+    await ctx.reply("Send a text answer.");
     return;
   }
 
@@ -2631,7 +2653,7 @@ async function handleQuizAnswer(ctx: Context & { from: TelegramFrom; message: un
       status: "failed",
       metadata: { answer }
     }));
-    await ctx.reply("Answer match koreni. Instruction check kore abar Verify Now press koro.");
+    await ctx.reply("Answer did not match. Check the instructions, then press Verify Now again.");
     quizWaiters.delete(ctx.from.id);
     return;
   }
