@@ -125,16 +125,19 @@ Support
 `Post Task` starts a guided wizard:
 
 ```text
-Task type
-Target / title
-Timer, when needed
+Category
+Verification method
+Target / title, depending on method
+Timer, when needed for website visits
 Reward per worker
 Worker limit
 Instruction template use/edit
 Final publish confirmation
 ```
 
-Task types auto-fill category, approval method, verification type, and starter instructions. Supported quick types are Telegram Join, Website Visit, Quiz / Code, Manual Proof, App Task, and Custom Task.
+Categories are Telegram, Website, App, Social, Survey, Data Entry, Review, Quiz / Code, and Custom. Verification methods are separate from category, so Manual Proof is a verification method, not a category.
+
+Earn Money opens category counts first, then paginated task lists per category.
 
 ## Auto Verification Notes
 

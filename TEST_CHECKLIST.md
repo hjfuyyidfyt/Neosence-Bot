@@ -21,8 +21,10 @@ Use this after Railway is serving the latest commit.
 ## Buyer Campaigns
 
 - Buyer opens `Post Task`.
-- Buyer chooses task type before entering details.
-- Task type auto-fills category, approval, verification, and instruction template.
+- Buyer chooses category first.
+- Buyer chooses verification method second.
+- Manual Proof is a verification method, not a category.
+- Earn Money shows task category counts and paginated category task lists.
 - Wizard creates a manual task.
 - Wizard creates an auto `telegram_join` task.
 - Telegram join task requires numeric chat ID and bot admin access.

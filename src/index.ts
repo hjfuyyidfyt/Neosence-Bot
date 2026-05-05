@@ -22,7 +22,7 @@ import {
   visibleTasks,
   walletSummary
 } from "./services.js";
-import { formatTask, mainMenu, modeMenu, taskActionButtons, taskButtons } from "./ui.js";
+import { formatTask, mainMenu, modeMenu, taskActionButtons } from "./ui.js";
 import type { DepositRequest, Dispute, Submission, Task, TaskApprovalType, TaskStatus, TrackedChat, VerificationType, Withdrawal } from "./types.js";
 
 const store = createStore({ databaseUrl: config.databaseUrl, dataFile: config.dataFile });
@@ -533,6 +533,18 @@ bot.action("menu:earn", async (ctx) => {
   await showEarn(ctx);
 });
 
+bot.action(/^earn:category:([^:]+):(\d+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  await ensureUser(ctx.from);
+  await showEarnCategory(ctx, ctx.match[1], Number(ctx.match[2]));
+});
+
+bot.action("earn:categories", async (ctx) => {
+  await ctx.answerCbQuery();
+  await ensureUser(ctx.from);
+  await showEarn(ctx);
+});
+
 bot.action("menu:post", async (ctx) => {
   await ctx.answerCbQuery();
   const user = await ensureUser(ctx.from);
@@ -666,6 +678,41 @@ bot.action(/^wizard:type:(telegram_join|website_visit|quiz|manual_proof|app_task
   }
 
   applyTaskTypeTemplate(draft, ctx.match[1]);
+  taskDrafts.set(ctx.from.id, draft);
+
+  if (draft.verificationType) {
+    await ctx.reply(verificationTargetPrompt(draft.verificationType));
+    return;
+  }
+
+  await ctx.reply("Task title likho.");
+});
+
+bot.action(/^wizard:category:(telegram|website|app|social|survey|data_entry|review|quiz|custom)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const draft = getTaskDraft(ctx.from.id);
+  if (!draft) {
+    await ctx.reply("Task draft expired. /posttask diye abar shuru koro.");
+    return;
+  }
+
+  draft.category = ctx.match[1];
+  draft.title = defaultTitleForCategory(draft.category);
+  draft.instructions = defaultInstructionForCategory(draft.category);
+  draft.step = "task_type";
+  taskDrafts.set(ctx.from.id, draft);
+  await ctx.reply("Verification method choose koro:", verificationMethodKeyboard(draft.category));
+});
+
+bot.action(/^wizard:method:(auto_join|timer_visit|quiz_answer|manual_proof|webhook|app_tracking|in_app_code)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const draft = getTaskDraft(ctx.from.id);
+  if (!draft?.category) {
+    await ctx.reply("Task draft expired. /posttask diye abar shuru koro.");
+    return;
+  }
+
+  applyVerificationMethod(draft, ctx.match[1]);
   taskDrafts.set(ctx.from.id, draft);
 
   if (draft.verificationType) {
@@ -1047,12 +1094,32 @@ async function ensureUser(from: TelegramFrom) {
 
 async function showEarn(ctx: Context & { from: TelegramFrom }) {
   const userId = ctx.from.id;
-  const tasks = visibleTasks(store.snapshot(), userId).slice(0, 10);
+  const tasks = visibleTasks(store.snapshot(), userId);
   if (tasks.length === 0) {
     await ctx.reply("Ekhon kono available task nai. Buyer mode theke first task post korte paro.");
     return;
   }
-  await ctx.reply("Available Neosence tasks:", taskButtons(tasks));
+  await ctx.reply("Task category choose koro:", earnCategoryKeyboard(tasks));
+}
+
+async function showEarnCategory(ctx: Context & { from: TelegramFrom }, category: string, page: number) {
+  const allTasks = visibleTasks(store.snapshot(), ctx.from.id);
+  const filtered = category === "all" ? allTasks : allTasks.filter((task) => task.category === category);
+  if (filtered.length === 0) {
+    await ctx.reply("Ei category-te kono available task nai.", Markup.inlineKeyboard([
+      [Markup.button.callback("Back to Categories", "earn:categories")]
+    ]));
+    return;
+  }
+
+  const pageSize = 8;
+  const totalPages = Math.max(Math.ceil(filtered.length / pageSize), 1);
+  const safePage = Math.min(Math.max(page, 0), totalPages - 1);
+  const tasks = filtered.slice(safePage * pageSize, safePage * pageSize + pageSize);
+  await ctx.reply(
+    `${categoryLabel(category)} Tasks - Page ${safePage + 1}/${totalPages}`,
+    earnTaskListKeyboard(tasks, category, safePage, totalPages)
+  );
 }
 
 function formatWallet(userId: number, mode: "freelancer" | "buyer"): string {
@@ -1088,6 +1155,47 @@ function formatWallet(userId: number, mode: "freelancer" | "buyer"): string {
 
 function formatMode(mode: "freelancer" | "buyer"): string {
   return mode === "freelancer" ? "Freelancer Mode" : "Buyer Mode";
+}
+
+const earnCategories = ["telegram", "website", "app", "social", "survey", "data_entry", "review", "quiz", "custom"];
+
+function categoryLabel(category: string): string {
+  const labels: Record<string, string> = {
+    all: "All",
+    telegram: "Telegram",
+    website: "Website",
+    app: "App",
+    social: "Social",
+    survey: "Survey",
+    data_entry: "Data Entry",
+    review: "Review",
+    quiz: "Quiz / Code",
+    custom: "Custom"
+  };
+  return labels[category] ?? category;
+}
+
+function earnCategoryKeyboard(tasks: Task[]) {
+  const rows = earnCategories
+    .map((category) => {
+      const count = tasks.filter((task) => task.category === category).length;
+      return count > 0 ? [Markup.button.callback(`${categoryLabel(category)} (${count})`, `earn:category:${category}:0`)] : undefined;
+    })
+    .filter((row): row is Array<ReturnType<typeof Markup.button.callback>> => Boolean(row));
+  rows.push([Markup.button.callback(`All Tasks (${tasks.length})`, "earn:category:all:0")]);
+  return Markup.inlineKeyboard(rows);
+}
+
+function earnTaskListKeyboard(tasks: Task[], category: string, page: number, totalPages: number) {
+  const rows = tasks.map((task) => [
+    Markup.button.callback(`${task.title} - ${task.rewardPerWorker} BDT`, `task:${task.id}`)
+  ]);
+  const nav = [];
+  if (page > 0) nav.push(Markup.button.callback("Previous", `earn:category:${category}:${page - 1}`));
+  if (page + 1 < totalPages) nav.push(Markup.button.callback("Next", `earn:category:${category}:${page + 1}`));
+  if (nav.length > 0) rows.push(nav);
+  rows.push([Markup.button.callback("Back to Categories", "earn:categories")]);
+  return Markup.inlineKeyboard(rows);
 }
 
 function formatWithdrawHelp(userId: number): string {
@@ -1303,13 +1411,12 @@ async function closeSupportTicket(ticketId: string) {
 
 async function startTaskWizard(ctx: Context & { from: TelegramFrom }) {
   setTaskDraft(ctx.from.id, { step: "task_type" });
-  await ctx.reply("Task type choose koro:", Markup.inlineKeyboard([
-    [Markup.button.callback("Telegram Join", "wizard:type:telegram_join")],
-    [Markup.button.callback("Website Visit", "wizard:type:website_visit")],
-    [Markup.button.callback("Quiz / Code", "wizard:type:quiz")],
-    [Markup.button.callback("Manual Proof", "wizard:type:manual_proof")],
-    [Markup.button.callback("App Task", "wizard:type:app_task")],
-    [Markup.button.callback("Custom Task", "wizard:type:custom")],
+  await ctx.reply("Task category choose koro:", Markup.inlineKeyboard([
+    [Markup.button.callback("Telegram", "wizard:category:telegram"), Markup.button.callback("Website", "wizard:category:website")],
+    [Markup.button.callback("App", "wizard:category:app"), Markup.button.callback("Social", "wizard:category:social")],
+    [Markup.button.callback("Survey", "wizard:category:survey"), Markup.button.callback("Data Entry", "wizard:category:data_entry")],
+    [Markup.button.callback("Review", "wizard:category:review"), Markup.button.callback("Quiz / Code", "wizard:category:quiz")],
+    [Markup.button.callback("Custom", "wizard:category:custom")],
     [Markup.button.callback("Cancel", "wizard:cancel")]
   ]));
 }
@@ -1366,6 +1473,108 @@ function applyTaskTypeTemplate(draft: TaskDraft, type: string) {
   draft.approvalType = "manual";
   draft.instructions = "Complete the task and submit proof.";
   draft.step = "title";
+}
+
+function verificationMethodKeyboard(category: string) {
+  const rows: Array<Array<ReturnType<typeof Markup.button.callback>>> = [];
+  if (category === "telegram") {
+    rows.push([Markup.button.callback("Auto Join", "wizard:method:auto_join")]);
+    rows.push([Markup.button.callback("Manual Proof", "wizard:method:manual_proof")]);
+  } else if (category === "website") {
+    rows.push([Markup.button.callback("Timer Visit", "wizard:method:timer_visit")]);
+    rows.push([Markup.button.callback("Manual Proof", "wizard:method:manual_proof")]);
+    rows.push([Markup.button.callback("Webhook/API", "wizard:method:webhook")]);
+  } else if (category === "app") {
+    rows.push([Markup.button.callback("Manual Proof", "wizard:method:manual_proof")]);
+    rows.push([Markup.button.callback("App Tracking", "wizard:method:app_tracking")]);
+    rows.push([Markup.button.callback("In-App Code", "wizard:method:in_app_code")]);
+  } else if (category === "quiz") {
+    rows.push([Markup.button.callback("Auto Answer", "wizard:method:quiz_answer")]);
+    rows.push([Markup.button.callback("Manual Proof", "wizard:method:manual_proof")]);
+  } else {
+    rows.push([Markup.button.callback("Manual Proof", "wizard:method:manual_proof")]);
+  }
+  rows.push([Markup.button.callback("Cancel", "wizard:cancel")]);
+  return Markup.inlineKeyboard(rows);
+}
+
+function applyVerificationMethod(draft: TaskDraft, method: string) {
+  if (method === "auto_join") {
+    draft.title = "Join Telegram channel/group";
+    draft.approvalType = "auto";
+    draft.verificationType = "telegram_join";
+    draft.instructions = "Join the target Telegram channel/group, then verify membership in Neosence.";
+    draft.step = "target";
+    return;
+  }
+
+  if (method === "timer_visit") {
+    draft.title = "Visit website";
+    draft.approvalType = "auto";
+    draft.verificationType = "website_visit";
+    draft.instructions = "Open the tracking link and keep the verification page open until the timer finishes.";
+    draft.step = "target";
+    return;
+  }
+
+  if (method === "quiz_answer") {
+    draft.title = "Complete quiz/code";
+    draft.approvalType = "auto";
+    draft.verificationType = "quiz";
+    draft.instructions = "Submit the correct answer/code in Neosence to complete this task.";
+    draft.step = "target";
+    return;
+  }
+
+  if (method === "webhook") {
+    draft.title = "Complete website action";
+    draft.approvalType = "auto";
+    draft.verificationType = "website_webhook";
+    draft.instructions = "Complete the required website action. Verification happens through buyer webhook/API.";
+    draft.step = "target";
+    return;
+  }
+
+  if (method === "app_tracking") {
+    draft.title = "Complete app task";
+    draft.approvalType = "auto";
+    draft.verificationType = "app_attribution";
+    draft.instructions = "Install/open the app using the tracking flow and complete the required action.";
+    draft.step = "target";
+    return;
+  }
+
+  if (method === "in_app_code") {
+    draft.title = "Submit in-app code";
+    draft.approvalType = "auto";
+    draft.verificationType = "in_app_code";
+    draft.instructions = "Find the in-app verification code and submit it in Neosence.";
+    draft.step = "target";
+    return;
+  }
+
+  draft.approvalType = "manual";
+  draft.verificationType = undefined;
+  draft.verificationTarget = undefined;
+  draft.title = defaultTitleForCategory(draft.category ?? "custom");
+  draft.instructions = defaultInstructionForCategory(draft.category ?? "custom");
+  draft.step = "title";
+}
+
+function defaultTitleForCategory(category: string): string {
+  return `${categoryLabel(category)} task`;
+}
+
+function defaultInstructionForCategory(category: string): string {
+  if (category === "social") return "Complete the social action and submit proof.";
+  if (category === "survey") return "Complete the survey and submit completion proof.";
+  if (category === "data_entry") return "Complete the data entry task and submit proof.";
+  if (category === "review") return "Complete the review task and submit proof.";
+  if (category === "app") return "Complete the app task and submit proof.";
+  if (category === "website") return "Complete the website task and submit proof.";
+  if (category === "telegram") return "Complete the Telegram task and submit proof.";
+  if (category === "quiz") return "Complete the quiz/code task and submit proof.";
+  return "Complete the task and submit proof.";
 }
 
 function setTaskDraft(userId: number, draft: Partial<TaskDraft> & { step: TaskDraftStep }) {
