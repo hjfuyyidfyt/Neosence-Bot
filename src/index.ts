@@ -75,6 +75,10 @@ const taskDrafts = new Map<number, TaskDraft>();
 const DRAFT_TTL_MS = 60 * 60 * 1000;
 const VERIFY_COOLDOWN_MS = 15 * 1000;
 const verifyCooldowns = new Map<string, number>();
+const botRuntime = {
+  launchState: "starting" as "starting" | "running" | "stopped" | "failed",
+  lastError: undefined as string | undefined
+};
 
 bot.use(async (ctx, next) => {
   if (!ctx.from || isAdmin(ctx.from.id)) {
@@ -2459,7 +2463,7 @@ async function handleHttpRequest(request: IncomingMessage, response: ServerRespo
 
   if (requestUrl.pathname === "/health") {
     response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify({ ok: true, ...runtime }));
+    response.end(JSON.stringify({ ok: botRuntime.launchState === "running", ...runtime, bot: botRuntime }));
     return;
   }
 
@@ -2991,12 +2995,28 @@ function extractProof(message: unknown): string {
 }
 
 bot.catch((error) => {
+  botRuntime.lastError = error instanceof Error ? error.message : String(error);
   console.error("Bot error", error);
 });
 
-await bot.launch();
-console.log("Neosence Bot is running");
+try {
+  await bot.launch();
+  botRuntime.launchState = "running";
+  botRuntime.lastError = undefined;
+  console.log("Neosence Bot is running");
+} catch (error) {
+  botRuntime.launchState = "failed";
+  botRuntime.lastError = error instanceof Error ? error.message : String(error);
+  console.error("Bot launch failed", error);
+  throw error;
+}
 console.log(config.databaseUrl ? "Storage: PostgreSQL" : "Storage: local JSON fallback");
 
-process.once("SIGINT", () => bot.stop("SIGINT"));
-process.once("SIGTERM", () => bot.stop("SIGTERM"));
+process.once("SIGINT", () => {
+  botRuntime.launchState = "stopped";
+  bot.stop("SIGINT");
+});
+process.once("SIGTERM", () => {
+  botRuntime.launchState = "stopped";
+  bot.stop("SIGTERM");
+});

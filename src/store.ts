@@ -233,23 +233,24 @@ export class PostgresStore extends CachedStore {
   }
 
   protected async save(): Promise<void> {
+    await this.pool.query(
+      `
+      INSERT INTO app_state (key, value, updated_at)
+      VALUES ($1, $2::jsonb, NOW())
+      ON CONFLICT (key)
+      DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+      `,
+      [this.stateKey, JSON.stringify(this.state)]
+    );
+
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
-      await client.query(
-        `
-        INSERT INTO app_state (key, value, updated_at)
-        VALUES ($1, $2::jsonb, NOW())
-        ON CONFLICT (key)
-        DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
-        `,
-        [this.stateKey, JSON.stringify(this.state)]
-      );
       await this.syncProjectionTables(client);
       await client.query("COMMIT");
     } catch (error) {
       await client.query("ROLLBACK");
-      throw error;
+      console.error("Projection table sync failed", error);
     } finally {
       client.release();
     }
