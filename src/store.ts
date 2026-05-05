@@ -198,6 +198,8 @@ export class JsonStore extends CachedStore {
 export class PostgresStore extends CachedStore {
   private readonly pool: pg.Pool;
   private readonly stateKey = "neosence";
+  private projectionSyncRunning = false;
+  private projectionSyncPending = false;
 
   constructor(databaseUrl: string) {
     super();
@@ -243,17 +245,7 @@ export class PostgresStore extends CachedStore {
       [this.stateKey, JSON.stringify(this.state)]
     );
 
-    const client = await this.pool.connect();
-    try {
-      await client.query("BEGIN");
-      await this.syncProjectionTables(client);
-      await client.query("COMMIT");
-    } catch (error) {
-      await client.query("ROLLBACK");
-      console.error("Projection table sync failed", error);
-    } finally {
-      client.release();
-    }
+    this.scheduleProjectionSync();
   }
 
   private async ensureProjectionTables(): Promise<void> {
@@ -324,6 +316,38 @@ export class PostgresStore extends CachedStore {
       CREATE INDEX IF NOT EXISTS ns_wallet_user_idx ON ns_wallet_transactions (user_id, type, status);
       CREATE INDEX IF NOT EXISTS ns_verification_task_worker_idx ON ns_verification_events (task_id, worker_id, type, status);
     `);
+  }
+
+  private scheduleProjectionSync(): void {
+    if (this.projectionSyncRunning) {
+      this.projectionSyncPending = true;
+      return;
+    }
+
+    this.projectionSyncRunning = true;
+    void this.runProjectionSyncLoop();
+  }
+
+  private async runProjectionSyncLoop(): Promise<void> {
+    try {
+      do {
+        this.projectionSyncPending = false;
+        const client = await this.pool.connect();
+        try {
+          await client.query("BEGIN");
+          await this.syncProjectionTables(client);
+          await client.query("COMMIT");
+        } catch (error) {
+          await client.query("ROLLBACK");
+          console.error("Projection table sync failed", error);
+        } finally {
+          client.release();
+        }
+      } while (this.projectionSyncPending);
+    } finally {
+      this.projectionSyncRunning = false;
+      if (this.projectionSyncPending) this.scheduleProjectionSync();
+    }
   }
 
   private async syncProjectionTables(client: pg.PoolClient): Promise<void> {
