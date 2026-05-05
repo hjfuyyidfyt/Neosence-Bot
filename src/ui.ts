@@ -1,29 +1,30 @@
 import { Markup } from "telegraf";
 import type { Task, UserProfile } from "./types.js";
+import { t } from "./messages.js";
 
 export function mainMenu(user: UserProfile) {
   if (user.mode === "buyer") {
     return Markup.inlineKeyboard([
-      [Markup.button.callback("💼 Post Task", "menu:post")],
-      [Markup.button.callback("📊 Campaigns", "menu:campaigns"), Markup.button.callback("🧾 Submissions", "menu:submissions")],
-      [Markup.button.callback("💰 Balance", "menu:wallet"), Markup.button.callback("🔄 Freelancer Mode", "mode:freelancer")],
-      [Markup.button.callback("👤 Profile", "menu:profile"), Markup.button.callback("🛟 Support", "menu:support")]
+      [Markup.button.callback(t.menu.postTask, "menu:post")],
+      [Markup.button.callback(t.menu.campaigns, "menu:campaigns"), Markup.button.callback(t.menu.submissions, "menu:submissions")],
+      [Markup.button.callback(t.menu.balance, "menu:wallet"), Markup.button.callback(t.menu.freelancerMode, "mode:freelancer")],
+      [Markup.button.callback(t.menu.profile, "menu:profile"), Markup.button.callback(t.menu.support, "menu:support")]
     ]);
   }
 
   return Markup.inlineKeyboard([
-    [Markup.button.callback("💼 Earn Money", "menu:earn")],
-    [Markup.button.callback("📌 My Jobs", "menu:jobs"), Markup.button.callback("💰 Wallet", "menu:wallet")],
-    [Markup.button.callback("🏦 Withdraw", "menu:withdraw"), Markup.button.callback("🔄 Buyer Mode", "mode:buyer")],
-    [Markup.button.callback("🤝 Referrals", "menu:referrals"), Markup.button.callback("👤 Profile", "menu:profile")],
-    [Markup.button.callback("🛟 Support", "menu:support")]
+    [Markup.button.callback(t.menu.earnMoney, "menu:earn")],
+    [Markup.button.callback(t.menu.myJobs, "menu:jobs"), Markup.button.callback(t.menu.wallet, "menu:wallet")],
+    [Markup.button.callback(t.menu.withdraw, "menu:withdraw"), Markup.button.callback(t.menu.buyerMode, "mode:buyer")],
+    [Markup.button.callback(t.menu.referrals, "menu:referrals"), Markup.button.callback(t.menu.profile, "menu:profile")],
+    [Markup.button.callback(t.menu.support, "menu:support")]
   ]);
 }
 
 export function modeMenu() {
   return Markup.inlineKeyboard([
-    [Markup.button.callback("💼 Work as Freelancer", "mode:freelancer")],
-    [Markup.button.callback("📣 Hire as Buyer", "mode:buyer")]
+    [Markup.button.callback(t.menu.workAsFreelancer, "mode:freelancer")],
+    [Markup.button.callback(t.menu.hireAsBuyer, "mode:buyer")]
   ]);
 }
 
