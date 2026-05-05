@@ -51,4 +51,11 @@ export const messages = {
   }
 } as const;
 
+export type LanguageCode = keyof typeof messages | "bn";
+
+export function getMessages(language?: string) {
+  if (language === "en") return messages.en;
+  return messages.en;
+}
+
 export const t = messages.en;

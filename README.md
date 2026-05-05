@@ -201,6 +201,8 @@ Default user-facing copy is English for worldwide use. Messages use restrained e
 
 Common user-facing labels and prompts live in `src/messages.ts` so future localization can be added without hunting through bot logic.
 
+Users can open `/language` or the Language menu button to save their language preference. English is the complete default; Bangla can be selected now and will fall back to English until its translation pack is completed.
+
 ## Drafts And Spam Guards
 
 Task drafts expire after one hour of inactivity and can be cleared with `/cancel`. Buyers cannot create another active campaign with the same verification type and target.

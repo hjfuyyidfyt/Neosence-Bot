@@ -109,6 +109,11 @@ bot.command("mode", async (ctx) => {
   await ctx.reply(t.start.chooseMode, modeMenu());
 });
 
+bot.command("language", async (ctx) => {
+  const user = await ensureUser(ctx.from);
+  await ctx.reply(formatLanguageStatus(user.language), languageKeyboard());
+});
+
 bot.command("earn", async (ctx) => {
   await ensureUser(ctx.from);
   await showEarn(ctx);
@@ -567,6 +572,24 @@ bot.action("menu:mode", async (ctx) => {
   await ctx.reply("Choose mode:", modeMenu());
 });
 
+bot.action(/^language:(en|bn)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const user = await ensureUser(ctx.from);
+  const language = ctx.match[1] as "en" | "bn";
+  const updatedUser = {
+    ...user,
+    language,
+    updatedAt: new Date().toISOString()
+  };
+  await store.upsertUser(updatedUser);
+  await ctx.reply(
+    language === "en"
+      ? "Language set to English."
+      : "Language set to Bangla. Some messages may still appear in English while translation is being completed.",
+    mainMenu(updatedUser)
+  );
+});
+
 bot.action("menu:jobs", async (ctx) => {
   await ctx.answerCbQuery();
   await ctx.reply("📌 Use /mytasks to see your accepted jobs and submissions.");
@@ -619,6 +642,12 @@ bot.action("menu:profile", async (ctx) => {
   await ctx.answerCbQuery();
   const user = await ensureUser(ctx.from);
   await ctx.reply(formatUserProfile(user.id), mainMenu(user));
+});
+
+bot.action("menu:language", async (ctx) => {
+  await ctx.answerCbQuery();
+  const user = await ensureUser(ctx.from);
+  await ctx.reply(formatLanguageStatus(user.language), languageKeyboard());
 });
 
 bot.action("menu:support", async (ctx) => {
@@ -1227,6 +1256,7 @@ function formatUserProfile(userId: number): string {
     `Name: ${user?.firstName ?? "Unknown"}`,
     `Username: ${user?.username ? `@${user.username}` : "N/A"}`,
     `Mode: ${user?.mode ?? "N/A"}`,
+    `Language: ${user?.language ?? "en"}`,
     `Trust: ${user?.trustLevel ?? calculateTrustLevel(state, userId)}`,
     "",
     "Wallet",
@@ -1240,6 +1270,23 @@ function formatUserProfile(userId: number): string {
     `Disputes: ${disputes.length}`,
     `Buyer campaigns: ${campaigns.length}`,
     `Referrals: ${referrals.length}`
+  ].join("\n");
+}
+
+function languageKeyboard() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("English", "language:en")],
+    [Markup.button.callback("Bangla", "language:bn")]
+  ]);
+}
+
+function formatLanguageStatus(language: "en" | "bn") {
+  const label = language === "bn" ? "Bangla" : "English";
+  return [
+    "🌐 Language",
+    `Current language: ${label}`,
+    "",
+    "Choose your preferred language:"
   ].join("\n");
 }
 
