@@ -28,6 +28,8 @@ import type { MessageBundle } from "./messages.js";
 import type { ApiVerificationPayload, DepositRequest, Dispute, Submission, Task, TaskApprovalType, TaskStatus, TrackedChat, VerificationType, Withdrawal } from "./types.js";
 
 const store = createStore({ databaseUrl: config.databaseUrl, dataFile: config.dataFile });
+const telegramWebhookPath = "/telegram/webhook";
+let telegramWebhookCallback: ((request: IncomingMessage, response: ServerResponse) => Promise<void>) | undefined;
 
 createServer((request, response) => {
   void handleHttpRequest(request, response);
@@ -2461,6 +2463,11 @@ function assertCampaignTargetAllowed(newTask: Task) {
 async function handleHttpRequest(request: IncomingMessage, response: ServerResponse) {
   const requestUrl = new URL(request.url ?? "/", publicBaseUrl());
 
+  if (requestUrl.pathname === telegramWebhookPath && telegramWebhookCallback) {
+    await telegramWebhookCallback(request, response);
+    return;
+  }
+
   if (requestUrl.pathname === "/health") {
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify({ ok: botRuntime.launchState === "running", ...runtime, bot: botRuntime }));
@@ -3001,11 +3008,17 @@ bot.catch((error) => {
 
 try {
   await bot.telegram.getMe();
-  void bot.launch().catch((error) => {
-    botRuntime.launchState = "failed";
-    botRuntime.lastError = error instanceof Error ? error.message : String(error);
-    console.error("Bot launch failed", error);
-  });
+  if (shouldUseWebhook()) {
+    telegramWebhookCallback = bot.webhookCallback(telegramWebhookPath);
+    await bot.telegram.setWebhook(new URL(telegramWebhookPath, publicBaseUrl()).toString());
+    console.log(`Telegram webhook enabled at ${telegramWebhookPath}`);
+  } else {
+    void bot.launch().catch((error) => {
+      botRuntime.launchState = "failed";
+      botRuntime.lastError = error instanceof Error ? error.message : String(error);
+      console.error("Bot launch failed", error);
+    });
+  }
   botRuntime.launchState = "running";
   botRuntime.lastError = undefined;
   console.log("Neosence Bot is running");
@@ -3025,3 +3038,7 @@ process.once("SIGTERM", () => {
   botRuntime.launchState = "stopped";
   bot.stop("SIGTERM");
 });
+
+function shouldUseWebhook(): boolean {
+  return !publicBaseUrl().startsWith("http://localhost");
+}
