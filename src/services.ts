@@ -30,6 +30,7 @@ export function getOrCreateUser(state: StoreState, from: {
       ...existing,
       username: from.username ?? existing.username,
       firstName: from.first_name ?? existing.firstName,
+      language: existing.language ?? "en",
       updatedAt: now()
     };
   }
@@ -38,6 +39,7 @@ export function getOrCreateUser(state: StoreState, from: {
     id: from.id,
     username: from.username,
     firstName: from.first_name,
+    language: "en",
     mode: "freelancer",
     isBanned: false,
     trustLevel: "new",

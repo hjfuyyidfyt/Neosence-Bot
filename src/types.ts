@@ -31,6 +31,7 @@ export interface UserProfile {
   id: number;
   username?: string;
   firstName?: string;
+  language: "en" | "bn";
   mode: UserMode;
   isBanned: boolean;
   trustLevel: "new" | "verified" | "trusted" | "pro";

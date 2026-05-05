@@ -135,7 +135,7 @@ bot.command("cancel", async (ctx) => {
 bot.command("posttask", async (ctx) => {
   const user = await ensureUser(ctx.from);
   if (user.mode !== "buyer") {
-    await ctx.reply("Task post korte Buyer mode-e switch koro.", mainMenu(user));
+    await ctx.reply("Switch to Buyer Mode to post a task.", mainMenu(user));
     return;
   }
 
@@ -148,7 +148,7 @@ bot.command("posttask", async (ctx) => {
 
   const parts = text.split("|").map((item) => item.trim());
   if (parts.length < 6) {
-    await ctx.reply("Task create korte minimum 6 fields lagbe. /posttask diye format dekho.");
+    await ctx.reply("This command needs at least 6 fields. Send /posttask with no text to use the guided wizard.");
     return;
   }
 
@@ -158,7 +158,7 @@ bot.command("posttask", async (ctx) => {
   const workerLimit = Number(workersRaw);
 
   if (!["manual", "auto"].includes(approvalType) || !Number.isFinite(rewardPerWorker) || !Number.isInteger(workerLimit)) {
-    await ctx.reply("Approval type manual/auto hote hobe, reward number hote hobe, workers full number hote hobe.");
+    await ctx.reply("Approval must be manual/auto. Reward must be a number and workers must be a whole number.");
     return;
   }
 
@@ -190,7 +190,7 @@ bot.command("posttask", async (ctx) => {
     note: "MVP records escrow lock. Connect deposit validation before public launch."
   }));
 
-  await ctx.reply(`Task live hoye geche.\n\n${formatTask(task)}\n\nEscrow locked: ${escrowRequired(task)} BDT`);
+  await ctx.reply(`✅ Task published\n\n${formatTask(task)}\n\nEscrow locked: ${escrowRequired(task)} BDT`);
 });
 
 bot.command("mytasks", async (ctx) => {
@@ -233,7 +233,7 @@ bot.command("withdraw", async (ctx) => {
     amount,
     note: method
   }));
-  await ctx.reply(`Withdrawal request pending: ${withdrawal.id}`);
+  await ctx.reply(`✅ Withdrawal request submitted\n\nID: ${withdrawal.id}`);
 });
 
 bot.command("dispute", async (ctx) => {
@@ -278,7 +278,7 @@ bot.command("depositreq", async (ctx) => {
     amount,
     note: `${method}: ${proof}`
   }));
-  await ctx.reply(`Deposit request submitted: ${deposit.id}\nAmount: ${deposit.amount} BDT\nStatus: ${deposit.status}`);
+  await ctx.reply(`✅ Deposit request submitted\n\nID: ${deposit.id}\nAmount: ${deposit.amount} BDT\nStatus: ${deposit.status}`);
 });
 
 bot.command("admin", async (ctx) => {
@@ -549,7 +549,7 @@ bot.action("menu:post", async (ctx) => {
   await ctx.answerCbQuery();
   const user = await ensureUser(ctx.from);
   if (user.mode !== "buyer") {
-    await ctx.reply("Task post korte Buyer mode-e switch koro.", mainMenu(user));
+    await ctx.reply("Switch to Buyer Mode to post a task.", mainMenu(user));
     return;
   }
   await startTaskWizard(ctx);
@@ -568,7 +568,7 @@ bot.action("menu:mode", async (ctx) => {
 
 bot.action("menu:jobs", async (ctx) => {
   await ctx.answerCbQuery();
-  await ctx.reply("Use /mytasks to see your accepted jobs and submissions.");
+  await ctx.reply("📌 Use /mytasks to see your accepted jobs and submissions.");
 });
 
 bot.action("menu:campaigns", async (ctx) => {
@@ -576,7 +576,7 @@ bot.action("menu:campaigns", async (ctx) => {
   const user = await ensureUser(ctx.from);
   const tasks = store.snapshot().tasks.filter((task) => task.buyerId === user.id);
   if (tasks.length === 0) {
-    await ctx.reply("Ekhono kono campaign nei. Post Task diye first campaign create koro.", mainMenu(user));
+    await ctx.reply("No campaigns yet. Use Post Task to create your first campaign.", mainMenu(user));
     return;
   }
 
@@ -591,7 +591,7 @@ bot.action("menu:submissions", async (ctx) => {
   const submissions = state.submissions.filter((submission) => taskIds.has(submission.taskId));
 
   if (submissions.length === 0) {
-    await ctx.reply("Ekhono kono campaign submission asheni.");
+    await ctx.reply("No campaign submissions yet.");
     return;
   }
 
@@ -623,7 +623,7 @@ bot.action("menu:profile", async (ctx) => {
 bot.action("menu:support", async (ctx) => {
   await ctx.answerCbQuery();
   supportWaiters.add(ctx.from.id);
-  await ctx.reply("Support message likho. Next message ticket hisebe admin-er jonno save hobe.");
+  await ctx.reply("🛟 Send your support message. Your next message will create a support ticket.");
 });
 
 bot.action("noop", async (ctx) => {
@@ -659,21 +659,21 @@ bot.action(/^wizard:approval:(manual|auto)$/, async (ctx) => {
   await ctx.answerCbQuery();
   const draft = getTaskDraft(ctx.from.id);
   if (!draft) {
-    await ctx.reply("Task draft expired. /posttask diye abar shuru koro.");
+    await ctx.reply("This draft expired. Start again with /posttask.");
     return;
   }
 
   draft.approvalType = ctx.match[1] as TaskApprovalType;
   draft.step = "reward";
   taskDrafts.set(ctx.from.id, draft);
-  await ctx.reply("Reward per worker koto BDT? Example: 5");
+  await ctx.reply("💰 Enter reward per worker.\n\nExample: 5");
 });
 
 bot.action(/^wizard:type:(telegram_join|website_visit|quiz|manual_proof|app_task|custom)$/, async (ctx) => {
   await ctx.answerCbQuery();
   const draft = getTaskDraft(ctx.from.id);
   if (!draft) {
-    await ctx.reply("Task draft expired. /posttask diye abar shuru koro.");
+    await ctx.reply("This draft expired. Start again with /posttask.");
     return;
   }
 
@@ -701,14 +701,14 @@ bot.action(/^wizard:category:(telegram|website|app|social|survey|data_entry|revi
   draft.instructions = defaultInstructionForCategory(draft.category);
   draft.step = "task_type";
   taskDrafts.set(ctx.from.id, draft);
-  await ctx.reply("Verification method choose koro:", verificationMethodKeyboard(draft.category));
+  await ctx.reply("🧭 Choose a verification method:", verificationMethodKeyboard(draft.category));
 });
 
 bot.action(/^wizard:method:(auto_join|timer_visit|quiz_answer|manual_proof|webhook|app_tracking|in_app_code)$/, async (ctx) => {
   await ctx.answerCbQuery();
   const draft = getTaskDraft(ctx.from.id);
   if (!draft?.category) {
-    await ctx.reply("Task draft expired. /posttask diye abar shuru koro.");
+    await ctx.reply("This draft expired. Start again with /posttask.");
     return;
   }
 
@@ -720,14 +720,14 @@ bot.action(/^wizard:method:(auto_join|timer_visit|quiz_answer|manual_proof|webho
     return;
   }
 
-  await ctx.reply("Task title likho.");
+  await ctx.reply("Enter the task title.");
 });
 
 bot.action("wizard:instruction:skip", async (ctx) => {
   await ctx.answerCbQuery();
   const draft = getTaskDraft(ctx.from.id);
   if (!draft) {
-    await ctx.reply("Task draft expired. /posttask diye abar shuru koro.");
+    await ctx.reply("This draft expired. Start again with /posttask.");
     return;
   }
   draft.step = "confirm";
@@ -739,19 +739,19 @@ bot.action("wizard:instruction:edit", async (ctx) => {
   await ctx.answerCbQuery();
   const draft = getTaskDraft(ctx.from.id);
   if (!draft) {
-    await ctx.reply("Task draft expired. /posttask diye abar shuru koro.");
+    await ctx.reply("This draft expired. Start again with /posttask.");
     return;
   }
   draft.step = "instructions";
   taskDrafts.set(ctx.from.id, draft);
-  await ctx.reply("Custom instruction likho.");
+  await ctx.reply("Write the custom instruction.");
 });
 
 bot.action(/^wizard:verification:(telegram_join|website_visit|website_webhook|app_attribution|in_app_code|quiz)$/, async (ctx) => {
   await ctx.answerCbQuery();
   const draft = getTaskDraft(ctx.from.id);
   if (!draft) {
-    await ctx.reply("Task draft expired. /posttask diye abar shuru koro.");
+    await ctx.reply("This draft expired. Start again with /posttask.");
     return;
   }
 
@@ -766,7 +766,7 @@ bot.action("wizard:confirm", async (ctx) => {
   const user = await ensureUser(ctx.from);
   const draft = getTaskDraft(ctx.from.id);
   if (!draft || !isCompleteDraft(draft)) {
-    await ctx.reply("Task draft incomplete. /posttask diye abar shuru koro.");
+    await ctx.reply("This draft is incomplete. Start again with /posttask.");
     return;
   }
 
@@ -799,14 +799,14 @@ bot.action("wizard:confirm", async (ctx) => {
   }));
   taskDrafts.delete(ctx.from.id);
 
-  await ctx.reply(`Task live hoye geche.\n\n${formatTask(task)}\n\nEscrow locked: ${escrowRequired(task)} BDT`, mainMenu(user));
+  await ctx.reply(`✅ Task published\n\n${formatTask(task)}\n\nEscrow locked: ${escrowRequired(task)} BDT`, mainMenu(user));
 });
 
 bot.action("wizard:cancel", async (ctx) => {
   await ctx.answerCbQuery();
   taskDrafts.delete(ctx.from.id);
   const user = await ensureUser(ctx.from);
-  await ctx.reply("Task draft cancelled.", mainMenu(user));
+  await ctx.reply("Draft cancelled.", mainMenu(user));
 });
 
 bot.action(/^submission:view:(.+)$/, async (ctx) => {
@@ -1096,17 +1096,17 @@ async function showEarn(ctx: Context & { from: TelegramFrom }) {
   const userId = ctx.from.id;
   const tasks = visibleTasks(store.snapshot(), userId);
   if (tasks.length === 0) {
-    await ctx.reply("Ekhon kono available task nai. Buyer mode theke first task post korte paro.");
+    await ctx.reply("No tasks are available right now.");
     return;
   }
-  await ctx.reply("Task category choose koro:", earnCategoryKeyboard(tasks));
+  await ctx.reply("💼 Choose a task category:", earnCategoryKeyboard(tasks));
 }
 
 async function showEarnCategory(ctx: Context & { from: TelegramFrom }, category: string, page: number) {
   const allTasks = visibleTasks(store.snapshot(), ctx.from.id);
   const filtered = category === "all" ? allTasks : allTasks.filter((task) => task.category === category);
   if (filtered.length === 0) {
-    await ctx.reply("Ei category-te kono available task nai.", Markup.inlineKeyboard([
+    await ctx.reply("No tasks are available in this category.", Markup.inlineKeyboard([
       [Markup.button.callback("Back to Categories", "earn:categories")]
     ]));
     return;
@@ -1117,7 +1117,7 @@ async function showEarnCategory(ctx: Context & { from: TelegramFrom }, category:
   const safePage = Math.min(Math.max(page, 0), totalPages - 1);
   const tasks = filtered.slice(safePage * pageSize, safePage * pageSize + pageSize);
   await ctx.reply(
-    `${categoryLabel(category)} Tasks - Page ${safePage + 1}/${totalPages}`,
+    `💼 ${categoryLabel(category)} Tasks\nPage ${safePage + 1}/${totalPages}`,
     earnTaskListKeyboard(tasks, category, safePage, totalPages)
   );
 }
@@ -1135,20 +1135,20 @@ function formatWallet(userId: number, mode: "freelancer" | "buyer"): string {
 
   if (mode === "buyer") {
     return [
-      "Neosence Buyer Balance",
+      "💰 Buyer Balance",
       ...common,
       "",
-      "Deposit:",
+      "Deposit",
       "Send payment to admin/payment number, then submit request:",
       "/depositreq 500 bkash trxid-or-proof-note"
     ].join("\n");
   }
 
   return [
-    "Neosence Freelancer Wallet",
+    "💰 Freelancer Wallet",
     ...common,
     "",
-    "Withdraw:",
+    "Withdraw",
     "/withdraw 100 bkash:01XXXXXXXXX"
   ].join("\n");
 }
@@ -1221,19 +1221,19 @@ function formatUserProfile(userId: number): string {
   const disputes = state.disputes.filter((dispute) => dispute.workerId === userId);
 
   return [
-    "Neosence Profile",
+    "👤 Neosence Profile",
     `User ID: ${userId}`,
     `Name: ${user?.firstName ?? "Unknown"}`,
     `Username: ${user?.username ? `@${user.username}` : "N/A"}`,
     `Mode: ${user?.mode ?? "N/A"}`,
     `Trust: ${user?.trustLevel ?? calculateTrustLevel(state, userId)}`,
     "",
-    "Wallet:",
+    "Wallet",
     `Available: ${wallet.available} BDT`,
     `Withdrawable: ${wallet.withdrawable} BDT`,
     `Escrow: ${wallet.escrow} BDT`,
     "",
-    "Activity:",
+    "Activity",
     `Approved jobs: ${approved}`,
     `Rejected jobs: ${rejected}`,
     `Disputes: ${disputes.length}`,
@@ -1411,12 +1411,12 @@ async function closeSupportTicket(ticketId: string) {
 
 async function startTaskWizard(ctx: Context & { from: TelegramFrom }) {
   setTaskDraft(ctx.from.id, { step: "task_type" });
-  await ctx.reply("Task category choose koro:", Markup.inlineKeyboard([
-    [Markup.button.callback("Telegram", "wizard:category:telegram"), Markup.button.callback("Website", "wizard:category:website")],
-    [Markup.button.callback("App", "wizard:category:app"), Markup.button.callback("Social", "wizard:category:social")],
-    [Markup.button.callback("Survey", "wizard:category:survey"), Markup.button.callback("Data Entry", "wizard:category:data_entry")],
-    [Markup.button.callback("Review", "wizard:category:review"), Markup.button.callback("Quiz / Code", "wizard:category:quiz")],
-    [Markup.button.callback("Custom", "wizard:category:custom")],
+  await ctx.reply("💼 Choose a task category:", Markup.inlineKeyboard([
+    [Markup.button.callback("📢 Telegram", "wizard:category:telegram"), Markup.button.callback("🌐 Website", "wizard:category:website")],
+    [Markup.button.callback("📱 App", "wizard:category:app"), Markup.button.callback("📣 Social", "wizard:category:social")],
+    [Markup.button.callback("📝 Survey", "wizard:category:survey"), Markup.button.callback("⌨️ Data Entry", "wizard:category:data_entry")],
+    [Markup.button.callback("⭐ Review", "wizard:category:review"), Markup.button.callback("✅ Quiz / Code", "wizard:category:quiz")],
+    [Markup.button.callback("⚙️ Custom", "wizard:category:custom")],
     [Markup.button.callback("Cancel", "wizard:cancel")]
   ]));
 }
@@ -1626,7 +1626,7 @@ async function notifyWaitingDraftsForChat(chat: TrackedChat) {
 async function handleTaskWizardMessage(ctx: Context & { from: TelegramFrom; message: unknown }, draft: TaskDraft) {
   const text = extractText(ctx.message);
   if (!text) {
-    await ctx.reply("Please text diye answer dao.");
+    await ctx.reply("Please send a text answer.");
     return;
   }
 
@@ -1635,13 +1635,13 @@ async function handleTaskWizardMessage(ctx: Context & { from: TelegramFrom; mess
     if (draft.category && draft.approvalType) {
       draft.step = "instructions";
       taskDrafts.set(ctx.from.id, draft);
-      await ctx.reply("Instruction likho. Existing template use korte chaile /skip likho.");
+      await ctx.reply("Write the instruction, or send /skip to use the template.");
       return;
     }
 
     draft.step = "category";
     taskDrafts.set(ctx.from.id, draft);
-    await ctx.reply("Category likho. Example: telegram, website, app, social, survey");
+    await ctx.reply("Enter a category. Example: telegram, website, app, social, survey");
     return;
   }
 
@@ -1649,7 +1649,7 @@ async function handleTaskWizardMessage(ctx: Context & { from: TelegramFrom; mess
     draft.category = text.slice(0, 40).toLowerCase();
     draft.step = "approval";
     taskDrafts.set(ctx.from.id, draft);
-    await ctx.reply("Approval method choose koro:", Markup.inlineKeyboard([
+    await ctx.reply("Choose an approval method:", Markup.inlineKeyboard([
       [Markup.button.callback("Manual Approval", "wizard:approval:manual")],
       [Markup.button.callback("Auto Verification", "wizard:approval:auto")],
       [Markup.button.callback("Cancel", "wizard:cancel")]
@@ -1660,31 +1660,31 @@ async function handleTaskWizardMessage(ctx: Context & { from: TelegramFrom; mess
   if (draft.step === "reward") {
     const reward = Number(text);
     if (!Number.isFinite(reward) || reward <= 0) {
-      await ctx.reply("Valid reward amount dao. Example: 5");
+      await ctx.reply("Enter a valid reward amount. Example: 5");
       return;
     }
     draft.rewardPerWorker = reward;
     draft.step = "workers";
     taskDrafts.set(ctx.from.id, draft);
-    await ctx.reply("Koto jon worker lagbe? Example: 100");
+    await ctx.reply("How many workers do you need?\n\nExample: 100");
     return;
   }
 
   if (draft.step === "workers") {
     const workerLimit = Number(text);
     if (!Number.isInteger(workerLimit) || workerLimit <= 0) {
-      await ctx.reply("Valid worker count dao. Example: 100");
+      await ctx.reply("Enter a valid worker count. Example: 100");
       return;
     }
     draft.workerLimit = workerLimit;
     if (draft.instructions) {
       taskDrafts.set(ctx.from.id, draft);
       await ctx.reply([
-        "Instruction template ready.",
+        "🧾 Instruction template ready",
         "",
         draft.instructions,
         "",
-        "Eta use korbe, na edit korbe?"
+        "Use this template or edit it?"
       ].join("\n"), Markup.inlineKeyboard([
         [Markup.button.callback("Use Template", "wizard:instruction:skip")],
         [Markup.button.callback("Edit Instruction", "wizard:instruction:edit")],
@@ -1695,7 +1695,7 @@ async function handleTaskWizardMessage(ctx: Context & { from: TelegramFrom; mess
 
     draft.step = "instructions";
     taskDrafts.set(ctx.from.id, draft);
-    await ctx.reply("Worker-er jonno clear instruction likho.");
+    await ctx.reply("Write clear instructions for workers.");
     return;
   }
 
@@ -1743,7 +1743,7 @@ async function handleTaskWizardMessage(ctx: Context & { from: TelegramFrom; mess
     if (draft.verificationType === "telegram_join") {
       const chatId = Number(text);
       if (!Number.isFinite(chatId)) {
-        await ctx.reply("Channel/group-er numeric chat ID dao. Example: -1001234567890");
+      await ctx.reply("Enter the numeric channel/group chat ID.\n\nExample: -1001234567890");
         return;
       }
 
@@ -1752,10 +1752,10 @@ async function handleTaskWizardMessage(ctx: Context & { from: TelegramFrom; mess
         draft.verificationTarget = String(chatId);
         taskDrafts.set(ctx.from.id, draft);
         await ctx.reply([
-          "Ei chat ID bot-er added/admin list-e pawa jayni.",
-          "Bot-ke target channel/group-er admin banan, tarpor ami automatic detect korbo.",
+        "I cannot access this chat yet.",
+        "Add this bot as an admin in the target channel/group. I will detect it automatically.",
           `Waiting chat ID: ${chatId}`,
-          "Admin add hoye gele ei draft continue korar jonno same ID abar pathate paro."
+        "After adding the bot, send the same ID again to continue."
         ].join("\n"));
         return;
       }
@@ -1767,7 +1767,7 @@ async function handleTaskWizardMessage(ctx: Context & { from: TelegramFrom; mess
     if (draft.verificationType === "website_visit") {
       draft.step = "website_timer";
       taskDrafts.set(ctx.from.id, draft);
-      await ctx.reply("Visit timer seconds dao. Example: 30, 60, 120");
+      await ctx.reply("Enter visit timer in seconds.\n\nExamples: 30, 60, 120");
       return;
     }
 
@@ -1778,7 +1778,7 @@ async function handleTaskWizardMessage(ctx: Context & { from: TelegramFrom; mess
   if (draft.step === "website_timer") {
     const seconds = Number(text);
     if (!Number.isInteger(seconds) || seconds < 5 || seconds > 600) {
-      await ctx.reply("Valid timer dao: 5 theke 600 seconds.");
+      await ctx.reply("Enter a valid timer between 5 and 600 seconds.");
       return;
     }
     draft.websiteVisitSeconds = seconds;
@@ -1786,7 +1786,7 @@ async function handleTaskWizardMessage(ctx: Context & { from: TelegramFrom; mess
     return;
   }
 
-  await ctx.reply("Ei step-er jonno button use koro, ba cancel korte Cancel press koro.");
+  await ctx.reply("Use the buttons for this step, or press Cancel.");
 }
 
 function confirmTaskKeyboard() {

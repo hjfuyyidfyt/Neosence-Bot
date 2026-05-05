@@ -195,6 +195,10 @@ Worker trust levels update from task history. Approved and auto-approved submiss
 
 Use `TEST_CHECKLIST.md` for the full end-to-end Telegram test pass after deployment.
 
+## UX Copy
+
+Default user-facing copy is English for worldwide use. Messages use restrained emoji for scanning, mostly in headings and main buttons, while admin and error messages stay plain and readable.
+
 ## Drafts And Spam Guards
 
 Task drafts expire after one hour of inactivity and can be cleared with `/cancel`. Buyers cannot create another active campaign with the same verification type and target.
