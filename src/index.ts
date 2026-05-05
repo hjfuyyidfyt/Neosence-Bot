@@ -876,7 +876,7 @@ bot.action(/^submission:view:(.+)$/, async (ctx) => {
     return;
   }
 
-  await ctx.reply(formatSubmissionReview(submission.id), submissionReviewKeyboard(submission.id, submission.status));
+  await sendSubmissionReview(ctx, submission.id);
 });
 
 bot.action(/^campaign:view:(.+)$/, async (ctx) => {
@@ -2043,6 +2043,49 @@ function formatSubmissionReview(submissionId: string): string {
     "Proof:",
     submission.proof ?? "No proof"
   ].filter(Boolean).join("\n");
+}
+
+async function sendSubmissionReview(ctx: Context, submissionId: string) {
+  const submission = store.snapshot().submissions.find((item) => item.id === submissionId);
+  if (!submission) {
+    await ctx.reply("Submission not found.");
+    return;
+  }
+
+  await ctx.reply(formatSubmissionReview(submission.id), submissionReviewKeyboard(submission.id, submission.status));
+  await sendProofPreview(ctx, submission.proof);
+}
+
+async function sendProofPreview(ctx: Context, proof?: string) {
+  if (!proof || !ctx.chat?.id) return;
+
+  const preview = parseProofPreview(proof);
+  if (!preview) return;
+
+  try {
+    if (preview.type === "photo") {
+      await ctx.telegram.sendPhoto(ctx.chat.id, preview.fileId, { caption: preview.caption ?? "Proof photo" });
+      return;
+    }
+
+    await ctx.telegram.sendDocument(ctx.chat.id, preview.fileId, { caption: preview.caption ?? preview.name ?? "Proof document" });
+  } catch (error) {
+    await ctx.reply(`Proof preview could not be loaded. Telegram file reference: ${preview.fileId}`);
+  }
+}
+
+function parseProofPreview(proof: string): { type: "photo" | "document"; fileId: string; caption?: string; name?: string } | undefined {
+  const match = /^(photo|document):(\S+)/.exec(proof);
+  if (!match) return undefined;
+
+  const caption = /caption="([^"]*)"/.exec(proof)?.[1];
+  const name = /name="([^"]*)"/.exec(proof)?.[1];
+  return {
+    type: match[1] as "photo" | "document",
+    fileId: match[2],
+    caption,
+    name
+  };
 }
 
 async function approveSubmissionById(submissionId: string, reviewerId: number) {
