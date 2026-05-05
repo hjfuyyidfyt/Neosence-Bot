@@ -582,10 +582,11 @@ bot.action(/^language:(en|bn)$/, async (ctx) => {
     updatedAt: new Date().toISOString()
   };
   await store.upsertUser(updatedUser);
+  const userMessages = t.language;
   await ctx.reply(
     language === "en"
-      ? "Language set to English."
-      : "Language set to Bangla. Some messages may still appear in English while translation is being completed.",
+      ? userMessages.englishSet
+      : userMessages.banglaSet,
     mainMenu(updatedUser)
   );
 });
@@ -1281,12 +1282,13 @@ function languageKeyboard() {
 }
 
 function formatLanguageStatus(language: "en" | "bn") {
+  const languageMessages = t.language;
   const label = language === "bn" ? "Bangla" : "English";
   return [
-    "🌐 Language",
-    `Current language: ${label}`,
+    languageMessages.title,
+    `${languageMessages.current} ${label}`,
     "",
-    "Choose your preferred language:"
+    languageMessages.choose
   ].join("\n");
 }
 

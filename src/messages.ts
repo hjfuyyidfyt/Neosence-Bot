@@ -25,7 +25,8 @@ export const messages = {
       withdraw: "🏦 Withdraw",
       referrals: "🤝 Referrals",
       workAsFreelancer: "💼 Work as Freelancer",
-      hireAsBuyer: "📣 Hire as Buyer"
+      hireAsBuyer: "📣 Hire as Buyer",
+      language: "🌐 Language"
     },
     taskWizard: {
       chooseCategory: "💼 Choose a task category:",
@@ -47,6 +48,13 @@ export const messages = {
     },
     support: {
       prompt: "🛟 Send your support message. Your next message will create a support ticket."
+    },
+    language: {
+      title: "🌐 Language",
+      current: "Current language:",
+      choose: "Choose your preferred language:",
+      englishSet: "Language set to English.",
+      banglaSet: "Language set to Bangla. Some messages may still appear in English while translation is being completed."
     }
   }
 } as const;
