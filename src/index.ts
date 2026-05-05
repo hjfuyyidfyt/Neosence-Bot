@@ -40,6 +40,7 @@ const proofWaiters = new Map<number, string>();
 const quizWaiters = new Map<number, string>();
 const supportWaiters = new Set<number>();
 type TaskDraftStep =
+  | "task_type"
   | "title"
   | "category"
   | "approval"
@@ -656,6 +657,49 @@ bot.action(/^wizard:approval:(manual|auto)$/, async (ctx) => {
   await ctx.reply("Reward per worker koto BDT? Example: 5");
 });
 
+bot.action(/^wizard:type:(telegram_join|website_visit|quiz|manual_proof|app_task|custom)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const draft = getTaskDraft(ctx.from.id);
+  if (!draft) {
+    await ctx.reply("Task draft expired. /posttask diye abar shuru koro.");
+    return;
+  }
+
+  applyTaskTypeTemplate(draft, ctx.match[1]);
+  taskDrafts.set(ctx.from.id, draft);
+
+  if (draft.verificationType) {
+    await ctx.reply(verificationTargetPrompt(draft.verificationType));
+    return;
+  }
+
+  await ctx.reply("Task title likho.");
+});
+
+bot.action("wizard:instruction:skip", async (ctx) => {
+  await ctx.answerCbQuery();
+  const draft = getTaskDraft(ctx.from.id);
+  if (!draft) {
+    await ctx.reply("Task draft expired. /posttask diye abar shuru koro.");
+    return;
+  }
+  draft.step = "confirm";
+  taskDrafts.set(ctx.from.id, draft);
+  await ctx.reply(formatDraftReview(draft), confirmTaskKeyboard());
+});
+
+bot.action("wizard:instruction:edit", async (ctx) => {
+  await ctx.answerCbQuery();
+  const draft = getTaskDraft(ctx.from.id);
+  if (!draft) {
+    await ctx.reply("Task draft expired. /posttask diye abar shuru koro.");
+    return;
+  }
+  draft.step = "instructions";
+  taskDrafts.set(ctx.from.id, draft);
+  await ctx.reply("Custom instruction likho.");
+});
+
 bot.action(/^wizard:verification:(telegram_join|website_visit|website_webhook|app_attribution|in_app_code|quiz)$/, async (ctx) => {
   await ctx.answerCbQuery();
   const draft = getTaskDraft(ctx.from.id);
@@ -1258,10 +1302,70 @@ async function closeSupportTicket(ticketId: string) {
 }
 
 async function startTaskWizard(ctx: Context & { from: TelegramFrom }) {
-  setTaskDraft(ctx.from.id, { step: "title" });
-  await ctx.reply("Task title likho. Example: Join our Telegram channel", Markup.inlineKeyboard([
+  setTaskDraft(ctx.from.id, { step: "task_type" });
+  await ctx.reply("Task type choose koro:", Markup.inlineKeyboard([
+    [Markup.button.callback("Telegram Join", "wizard:type:telegram_join")],
+    [Markup.button.callback("Website Visit", "wizard:type:website_visit")],
+    [Markup.button.callback("Quiz / Code", "wizard:type:quiz")],
+    [Markup.button.callback("Manual Proof", "wizard:type:manual_proof")],
+    [Markup.button.callback("App Task", "wizard:type:app_task")],
+    [Markup.button.callback("Custom Task", "wizard:type:custom")],
     [Markup.button.callback("Cancel", "wizard:cancel")]
   ]));
+}
+
+function applyTaskTypeTemplate(draft: TaskDraft, type: string) {
+  if (type === "telegram_join") {
+    draft.title = "Join Telegram channel/group";
+    draft.category = "telegram";
+    draft.approvalType = "auto";
+    draft.verificationType = "telegram_join";
+    draft.instructions = "Join the target Telegram channel/group, then verify membership in Neosence.";
+    draft.step = "target";
+    return;
+  }
+
+  if (type === "website_visit") {
+    draft.title = "Visit website";
+    draft.category = "website";
+    draft.approvalType = "auto";
+    draft.verificationType = "website_visit";
+    draft.instructions = "Open the tracking link and keep the verification page open until the timer finishes.";
+    draft.step = "target";
+    return;
+  }
+
+  if (type === "quiz") {
+    draft.title = "Complete quiz/code";
+    draft.category = "quiz";
+    draft.approvalType = "auto";
+    draft.verificationType = "quiz";
+    draft.instructions = "Submit the correct answer/code in Neosence to complete this task.";
+    draft.step = "target";
+    return;
+  }
+
+  if (type === "app_task") {
+    draft.title = "Complete app task";
+    draft.category = "app";
+    draft.approvalType = "manual";
+    draft.instructions = "Complete the app task and submit proof.";
+    draft.step = "title";
+    return;
+  }
+
+  if (type === "manual_proof") {
+    draft.category = "manual";
+    draft.approvalType = "manual";
+    draft.instructions = "Complete the task and submit screenshot, text, link, or document proof.";
+    draft.step = "title";
+    return;
+  }
+
+  draft.category = "custom";
+  draft.approvalType = "manual";
+  draft.instructions = "Complete the task and submit proof.";
+  draft.step = "title";
 }
 
 function setTaskDraft(userId: number, draft: Partial<TaskDraft> & { step: TaskDraftStep }) {
@@ -1319,6 +1423,13 @@ async function handleTaskWizardMessage(ctx: Context & { from: TelegramFrom; mess
 
   if (draft.step === "title") {
     draft.title = text.slice(0, 80);
+    if (draft.category && draft.approvalType) {
+      draft.step = "instructions";
+      taskDrafts.set(ctx.from.id, draft);
+      await ctx.reply("Instruction likho. Existing template use korte chaile /skip likho.");
+      return;
+    }
+
     draft.step = "category";
     taskDrafts.set(ctx.from.id, draft);
     await ctx.reply("Category likho. Example: telegram, website, app, social, survey");
@@ -1357,6 +1468,22 @@ async function handleTaskWizardMessage(ctx: Context & { from: TelegramFrom; mess
       return;
     }
     draft.workerLimit = workerLimit;
+    if (draft.instructions) {
+      taskDrafts.set(ctx.from.id, draft);
+      await ctx.reply([
+        "Instruction template ready.",
+        "",
+        draft.instructions,
+        "",
+        "Eta use korbe, na edit korbe?"
+      ].join("\n"), Markup.inlineKeyboard([
+        [Markup.button.callback("Use Template", "wizard:instruction:skip")],
+        [Markup.button.callback("Edit Instruction", "wizard:instruction:edit")],
+        [Markup.button.callback("Cancel", "wizard:cancel")]
+      ]));
+      return;
+    }
+
     draft.step = "instructions";
     taskDrafts.set(ctx.from.id, draft);
     await ctx.reply("Worker-er jonno clear instruction likho.");
@@ -1364,7 +1491,9 @@ async function handleTaskWizardMessage(ctx: Context & { from: TelegramFrom; mess
   }
 
   if (draft.step === "instructions") {
-    draft.instructions = text.slice(0, 1200);
+    if (text.toLowerCase() !== "/skip") {
+      draft.instructions = text.slice(0, 1200);
+    }
 
     if (draft.approvalType === "auto") {
       draft.step = "verification";
@@ -1378,6 +1507,20 @@ async function handleTaskWizardMessage(ctx: Context & { from: TelegramFrom; mess
         [Markup.button.callback("Quiz", "wizard:verification:quiz")],
         [Markup.button.callback("Cancel", "wizard:cancel")]
       ]));
+      return;
+    }
+
+    if (!draft.rewardPerWorker) {
+      draft.step = "reward";
+      taskDrafts.set(ctx.from.id, draft);
+      await ctx.reply("Reward per worker koto BDT? Example: 5");
+      return;
+    }
+
+    if (!draft.workerLimit) {
+      draft.step = "workers";
+      taskDrafts.set(ctx.from.id, draft);
+      await ctx.reply("Koto jon worker lagbe? Example: 100");
       return;
     }
 
@@ -1419,9 +1562,7 @@ async function handleTaskWizardMessage(ctx: Context & { from: TelegramFrom; mess
       return;
     }
 
-    draft.step = "confirm";
-    taskDrafts.set(ctx.from.id, draft);
-    await ctx.reply(formatDraftReview(draft), confirmTaskKeyboard());
+    await promptNextCommercialStep(ctx, draft);
     return;
   }
 
@@ -1432,9 +1573,7 @@ async function handleTaskWizardMessage(ctx: Context & { from: TelegramFrom; mess
       return;
     }
     draft.websiteVisitSeconds = seconds;
-    draft.step = "confirm";
-    taskDrafts.set(ctx.from.id, draft);
-    await ctx.reply(formatDraftReview(draft), confirmTaskKeyboard());
+    await promptNextCommercialStep(ctx, draft);
     return;
   }
 
@@ -1446,6 +1585,26 @@ function confirmTaskKeyboard() {
     [Markup.button.callback("Publish Task", "wizard:confirm")],
     [Markup.button.callback("Cancel", "wizard:cancel")]
   ]);
+}
+
+async function promptNextCommercialStep(ctx: Context & { from: TelegramFrom }, draft: TaskDraft) {
+  if (!draft.rewardPerWorker) {
+    draft.step = "reward";
+    taskDrafts.set(ctx.from.id, draft);
+    await ctx.reply("Reward per worker koto BDT? Example: 5");
+    return;
+  }
+
+  if (!draft.workerLimit) {
+    draft.step = "workers";
+    taskDrafts.set(ctx.from.id, draft);
+    await ctx.reply("Koto jon worker lagbe? Example: 100");
+    return;
+  }
+
+  draft.step = "confirm";
+  taskDrafts.set(ctx.from.id, draft);
+  await ctx.reply(formatDraftReview(draft), confirmTaskKeyboard());
 }
 
 function formatDraftReview(draft: TaskDraft): string {

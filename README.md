@@ -125,15 +125,16 @@ Support
 `Post Task` starts a guided wizard:
 
 ```text
-Title
-Category
-Approval method
+Task type
+Target / title
+Timer, when needed
 Reward per worker
 Worker limit
-Instructions
-Auto verification type and target, when needed
+Instruction template use/edit
 Final publish confirmation
 ```
+
+Task types auto-fill category, approval method, verification type, and starter instructions. Supported quick types are Telegram Join, Website Visit, Quiz / Code, Manual Proof, App Task, and Custom Task.
 
 ## Auto Verification Notes
 

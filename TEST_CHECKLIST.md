@@ -21,6 +21,8 @@ Use this after Railway is serving the latest commit.
 ## Buyer Campaigns
 
 - Buyer opens `Post Task`.
+- Buyer chooses task type before entering details.
+- Task type auto-fills category, approval, verification, and instruction template.
 - Wizard creates a manual task.
 - Wizard creates an auto `telegram_join` task.
 - Telegram join task requires numeric chat ID and bot admin access.
