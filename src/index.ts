@@ -2466,7 +2466,7 @@ async function handleWebsiteVisitTrack(request: IncomingMessage, response: Serve
   }
 
   const seconds = task.websiteVisitSeconds ?? 30;
-  const completeUrl = new URL("/track/complete", publicBaseUrl());
+  const completeUrl = new URL("/track/complete", requestPublicBaseUrl(request));
   completeUrl.searchParams.set("taskId", taskId);
   completeUrl.searchParams.set("workerId", String(workerId));
   completeUrl.searchParams.set("ip", String(request.headers["x-forwarded-for"] ?? request.socket.remoteAddress ?? ""));
@@ -2579,9 +2579,20 @@ function escapeHtml(value: string): string {
 }
 
 function publicBaseUrl(): string {
-  if (config.publicUrl) return config.publicUrl;
+  if (config.publicUrl) return normalizeBaseUrl(config.publicUrl);
   if (process.env.RAILWAY_PUBLIC_DOMAIN) return `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`;
   return `http://localhost:${config.port}`;
+}
+
+function requestPublicBaseUrl(request: IncomingMessage): string {
+  const forwardedProto = String(request.headers["x-forwarded-proto"] ?? "https").split(",")[0].trim();
+  const forwardedHost = String(request.headers["x-forwarded-host"] ?? request.headers.host ?? "").split(",")[0].trim();
+  if (forwardedHost) return `${forwardedProto || "https"}://${forwardedHost}`;
+  return publicBaseUrl();
+}
+
+function normalizeBaseUrl(url: string): string {
+  return url.replace(/\/+$/, "");
 }
 
 function websiteVisitTrackingUrl(taskId: string, workerId: number): string {

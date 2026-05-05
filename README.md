@@ -44,11 +44,12 @@ Required Railway variables:
 BOT_TOKEN=your_telegram_bot_token
 ADMIN_IDS=your_telegram_user_id
 DATABASE_URL=your_postgres_connection_string
-PUBLIC_URL=https://your-app.up.railway.app
 PLATFORM_FEE_PERCENT=15
 AUTO_WITHDRAW_HOLD_HOURS=24
 REFERRAL_BONUS_BDT=1
 ```
+
+`PUBLIC_URL` is optional on Railway because Neosence can use Railway's public domain automatically. Set it only when you want generated Telegram tracking links to use a specific custom domain.
 
 Railway will run:
 
