@@ -244,17 +244,47 @@ export function walletSummary(state: StoreState, userId: number) {
 }
 
 export function calculateTrustLevel(state: StoreState, userId: number): UserProfile["trustLevel"] {
+  const score = calculateTrustScore(state, userId).score;
+  if (score >= 90) return "pro";
+  if (score >= 70) return "trusted";
+  if (score >= 40) return "verified";
+  return "new";
+}
+
+export function calculateTrustScore(state: StoreState, userId: number): { score: number; level: "Starter" | "Bronze" | "Silver" | "Gold" | "Platinum" } {
   const submissions = state.submissions.filter((submission) => submission.workerId === userId);
   const approved = submissions.filter((submission) => submission.status === "approved" || submission.status === "auto_approved").length;
   const rejected = submissions.filter((submission) => submission.status === "rejected").length;
-  const disputes = state.disputes.filter((dispute) => dispute.workerId === userId).length;
+  const disputes = state.disputes.filter((dispute) => dispute.workerId === userId || dispute.buyerId === userId);
+  const buyerCampaigns = state.tasks.filter((task) => task.buyerId === userId);
+  const completedCampaigns = buyerCampaigns.filter((task) => task.status === "completed").length;
+  const cancelledCampaigns = buyerCampaigns.filter((task) => task.status === "cancelled").length;
+  const deposits = state.deposits.filter((deposit) => deposit.userId === userId && deposit.status === "approved").length;
   const totalReviewed = approved + rejected;
   const approvalRate = totalReviewed > 0 ? approved / totalReviewed : 0;
+  const user = state.users.find((item) => item.id === userId);
+  const accountAgeDays = user ? Math.max((Date.now() - new Date(user.createdAt).getTime()) / (24 * 60 * 60 * 1000), 0) : 0;
 
-  if (approved >= 100 && approvalRate >= 0.95 && disputes <= 3) return "pro";
-  if (approved >= 30 && approvalRate >= 0.9 && disputes <= 2) return "trusted";
-  if (approved >= 5 && approvalRate >= 0.8) return "verified";
-  return "new";
+  let score = 20;
+  score += Math.min(approved * 1.5, 25);
+  score += totalReviewed > 0 ? approvalRate * 25 : 0;
+  score += Math.min(completedCampaigns * 2, 12);
+  score += Math.min(deposits * 2, 8);
+  score += Math.min(accountAgeDays / 7, 10);
+  score -= rejected * 4;
+  score -= disputes.length * 8;
+  score -= cancelledCampaigns * 3;
+
+  const boundedScore = Math.max(0, Math.min(Math.round(score), 100));
+  return { score: boundedScore, level: trustScoreLevel(boundedScore) };
+}
+
+export function trustScoreLevel(score: number): "Starter" | "Bronze" | "Silver" | "Gold" | "Platinum" {
+  if (score >= 90) return "Platinum";
+  if (score >= 70) return "Gold";
+  if (score >= 40) return "Silver";
+  if (score >= 20) return "Bronze";
+  return "Starter";
 }
 
 export function visibleTasks(state: StoreState, workerId: number): Task[] {

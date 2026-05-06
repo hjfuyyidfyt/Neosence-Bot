@@ -16,6 +16,7 @@ import {
   createWithdrawal,
   escrowRequired,
   calculateTrustLevel,
+  calculateTrustScore,
   getOrCreateUser,
   rejectSubmission,
   switchMode,
@@ -635,13 +636,28 @@ bot.action("menu:campaigns", async (ctx) => {
   await ctx.answerCbQuery();
   const user = await ensureUser(ctx.from);
   const messages = getMessages(user.language);
-  const tasks = store.snapshot().tasks.filter((task) => task.buyerId === user.id);
+  const tasks = store.snapshot().tasks.filter((task) => task.buyerId === user.id && ["active", "paused"].includes(task.status));
   if (tasks.length === 0) {
-    await showScreen(ctx, messages.campaigns.none, mainMenu(user));
+    await showScreen(ctx, messages.campaigns.none, campaignEmptyKeyboard(user));
     return;
   }
 
   await showScreen(ctx, formatCampaignList(tasks), campaignListKeyboard(tasks));
+});
+
+bot.action("menu:campaign_history", async (ctx) => {
+  await ctx.answerCbQuery();
+  const user = await ensureUser(ctx.from);
+  const tasks = store.snapshot().tasks.filter((task) => task.buyerId === user.id && ["completed", "cancelled"].includes(task.status));
+  if (tasks.length === 0) {
+    await showScreen(ctx, "No completed or cancelled campaigns yet.", Markup.inlineKeyboard([
+      [Markup.button.callback("Back to Campaigns", "menu:campaigns")],
+      [Markup.button.callback("Home", "menu:home")]
+    ]));
+    return;
+  }
+
+  await showScreen(ctx, formatCampaignHistory(tasks), campaignHistoryKeyboard());
 });
 
 bot.action("menu:submissions", async (ctx) => {
@@ -957,7 +973,7 @@ bot.action(/^campaign:cancel:(.+)$/, async (ctx) => {
 
   try {
     const result = await cancelCampaign(ctx.match[1], user.id);
-    await ctx.reply(`Campaign cancelled: ${result.task.title}\nRefunded: ${result.refundAmount} BDT`);
+    await showScreen(ctx, `Campaign cancelled: ${result.task.title}\nRefunded: ${result.refundAmount} BDT`, campaignHistoryKeyboard());
   } catch (error) {
     await ctx.reply((error as Error).message);
   }
@@ -1340,7 +1356,8 @@ function earnTaskScore(task: Task): number {
   const autoBonus = task.approvalType === "auto" ? 10 : 0;
   const freshnessBonus = Math.max(0, 5 - ageHours(task.createdAt) / 24);
   const nearFullPenalty = remainingWorkers <= 2 ? 8 : 0;
-  return task.rewardPerWorker * 100 + autoBonus + availabilityBonus + freshnessBonus - nearFullPenalty;
+  const buyerTrustBonus = calculateTrustScore(store.snapshot(), task.buyerId).score / 10;
+  return task.rewardPerWorker * 100 + buyerTrustBonus + autoBonus + availabilityBonus + freshnessBonus - nearFullPenalty;
 }
 
 function ageHours(value: string): number {
@@ -1400,32 +1417,30 @@ function formatUserProfile(userId: number): string {
   const state = store.snapshot();
   const user = state.users.find((item) => item.id === userId);
   const wallet = walletSummary(state, userId);
+  const trust = calculateTrustScore(state, userId);
   const submissions = state.submissions.filter((submission) => submission.workerId === userId);
   const approved = submissions.filter((submission) => submission.status === "approved" || submission.status === "auto_approved").length;
   const rejected = submissions.filter((submission) => submission.status === "rejected").length;
-  const campaigns = state.tasks.filter((task) => task.buyerId === userId);
+  const activeCampaigns = state.tasks.filter((task) => task.buyerId === userId && ["active", "paused"].includes(task.status)).length;
   const referrals = state.referrals.filter((referral) => referral.referrerId === userId);
   const disputes = state.disputes.filter((dispute) => dispute.workerId === userId);
+  const nameLine = `${user?.firstName ?? "Unknown"}${user?.username ? ` (@${user.username})` : ""}`;
 
   return [
-    "👤 Neosence Profile",
-    `User ID: ${userId}`,
-    `Name: ${user?.firstName ?? "Unknown"}`,
-    `Username: ${user?.username ? `@${user.username}` : "N/A"}`,
+    "👤 Profile",
+    nameLine,
     `Mode: ${user?.mode ?? "N/A"}`,
-    `Language: ${user?.language ?? "en"}`,
-    `Trust: ${user?.trustLevel ?? calculateTrustLevel(state, userId)}`,
+    `Trust: ${trust.score}/100 ${trust.level}`,
     "",
-    "Wallet",
+    "💰 Wallet",
     `Available: ${wallet.available} BDT`,
     `Withdrawable: ${wallet.withdrawable} BDT`,
-    `Escrow: ${wallet.escrow} BDT`,
     "",
-    "Activity",
-    `Approved jobs: ${approved}`,
-    `Rejected jobs: ${rejected}`,
+    "📌 Activity",
+    `Approved: ${approved}`,
+    `Rejected: ${rejected}`,
     `Disputes: ${disputes.length}`,
-    `Buyer campaigns: ${campaigns.length}`,
+    `Active campaigns: ${activeCampaigns}`,
     `Referrals: ${referrals.length}`
   ].join("\n");
 }
@@ -1461,6 +1476,7 @@ function formatUserLookup(userId: number): string {
   const referrals = state.referrals.filter((referral) => referral.referrerId === userId);
   const disputes = state.disputes.filter((dispute) => dispute.workerId === userId);
   const calculatedTrust = calculateTrustLevel(state, userId);
+  const trust = calculateTrustScore(state, userId);
 
   return [
     "User Lookup",
@@ -1468,7 +1484,7 @@ function formatUserLookup(userId: number): string {
     `Name: ${user?.firstName ?? "Unknown"}`,
     `Username: ${user?.username ? `@${user.username}` : "N/A"}`,
     `Mode: ${user?.mode ?? "N/A"}`,
-    `Trust: ${user?.trustLevel ?? "N/A"} (calculated: ${calculatedTrust})`,
+    `Trust: ${trust.score}/100 ${trust.level} (legacy: ${user?.trustLevel ?? "N/A"}, calculated: ${calculatedTrust})`,
     `Banned: ${user?.isBanned ?? false}`,
     "",
     "Wallet:",
@@ -2430,6 +2446,22 @@ function campaignListKeyboard(tasks: Task[]) {
     ...tasks.slice(0, 10).map((task) => [
       Markup.button.callback(`${task.title} (${task.status})`, `campaign:view:${task.id}`)
     ]),
+    [Markup.button.callback("Campaign History", "menu:campaign_history")],
+    [Markup.button.callback("Home", "menu:home")]
+  ]);
+}
+
+function campaignEmptyKeyboard(user: { language: "en" | "bn" }) {
+  const messages = getMessages(user.language);
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("Campaign History", "menu:campaign_history")],
+    [Markup.button.callback(messages.common.back, "menu:home")]
+  ]);
+}
+
+function campaignHistoryKeyboard() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("Back to Campaigns", "menu:campaigns")],
     [Markup.button.callback("Home", "menu:home")]
   ]);
 }
@@ -2453,10 +2485,25 @@ function campaignActionKeyboard(taskId: string, status: TaskStatus) {
 function formatCampaignList(tasks: Task[]): string {
   return [
     "My Campaigns",
+    "Active and paused campaigns only",
     "",
     ...tasks.slice(0, 10).map((task) => {
       const pending = store.snapshot().submissions.filter((submission) => submission.taskId === task.id && submission.status === "pending").length;
       return `- ${task.title}: ${task.status}, ${task.completedCount}/${task.workerLimit}, pending ${pending}`;
+    })
+  ].join("\n");
+}
+
+function formatCampaignHistory(tasks: Task[]): string {
+  return [
+    "Campaign History",
+    "Completed and cancelled campaigns",
+    "",
+    ...tasks.slice(0, 10).map((task) => {
+      const refunded = store.snapshot().walletTransactions
+        .filter((transaction) => transaction.taskId === task.id && transaction.type === "escrow_refund" && transaction.status === "completed")
+        .reduce((sum, transaction) => sum + transaction.amount, 0);
+      return `- ${task.title}: ${task.status}, ${task.completedCount}/${task.workerLimit}${refunded ? `, refunded ${refunded} BDT` : ""}`;
     })
   ].join("\n");
 }
