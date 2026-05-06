@@ -82,6 +82,8 @@ const botRuntime = {
   lastError: undefined as string | undefined
 };
 
+type ReplyMarkup = Parameters<Context["reply"]>[1];
+
 bot.use(async (ctx, next) => {
   if (!ctx.from || isAdmin(ctx.from.id)) {
     await next();
@@ -577,14 +579,14 @@ bot.action("menu:post", async (ctx) => {
 bot.action("menu:wallet", async (ctx) => {
   await ctx.answerCbQuery();
   const user = await ensureUser(ctx.from);
-  await ctx.reply(formatWallet(user.id, user.mode));
+  await showScreen(ctx, formatWallet(user.id, user.mode), homeKeyboard(user));
 });
 
 bot.action("menu:mode", async (ctx) => {
   await ctx.answerCbQuery();
   const user = await ensureUser(ctx.from);
   const messages = getMessages(user.language);
-  await ctx.reply(messages.start.chooseMode, modeMenu(user.language));
+  await showScreen(ctx, messages.start.chooseMode, modeMenu(user.language));
 });
 
 bot.action(/^language:(en|bn)$/, async (ctx) => {
@@ -598,7 +600,8 @@ bot.action(/^language:(en|bn)$/, async (ctx) => {
   };
   await store.upsertUser(updatedUser);
   const userMessages = getMessages(language).language;
-  await ctx.reply(
+  await showScreen(
+    ctx,
     language === "en"
       ? userMessages.englishSet
       : userMessages.banglaSet,
@@ -608,7 +611,8 @@ bot.action(/^language:(en|bn)$/, async (ctx) => {
 
 bot.action("menu:jobs", async (ctx) => {
   await ctx.answerCbQuery();
-  await ctx.reply(userMessages(ctx.from.id).earn.myJobsHelp);
+  const user = await ensureUser(ctx.from);
+  await showScreen(ctx, userMessages(ctx.from.id).earn.myJobsHelp, homeKeyboard(user));
 });
 
 bot.action("menu:campaigns", async (ctx) => {
@@ -617,11 +621,11 @@ bot.action("menu:campaigns", async (ctx) => {
   const messages = getMessages(user.language);
   const tasks = store.snapshot().tasks.filter((task) => task.buyerId === user.id);
   if (tasks.length === 0) {
-    await ctx.reply(messages.campaigns.none, mainMenu(user));
+    await showScreen(ctx, messages.campaigns.none, mainMenu(user));
     return;
   }
 
-  await ctx.reply(formatCampaignList(tasks), campaignListKeyboard(tasks));
+  await showScreen(ctx, formatCampaignList(tasks), campaignListKeyboard(tasks));
 });
 
 bot.action("menu:submissions", async (ctx) => {
@@ -633,12 +637,12 @@ bot.action("menu:submissions", async (ctx) => {
   const submissions = state.submissions.filter((submission) => taskIds.has(submission.taskId));
 
   if (submissions.length === 0) {
-    await ctx.reply(messages.campaigns.noSubmissions);
+    await showScreen(ctx, messages.campaigns.noSubmissions, homeKeyboard(user));
     return;
   }
 
   const pending = submissions.filter((submission) => submission.status === "pending");
-  await ctx.reply([
+  await showScreen(ctx, [
     messages.campaigns.recentSubmissions,
     ...submissions.slice(0, 10).map((submission) => `- ${submission.id}: ${submission.status}, worker ${submission.workerId}, ${submission.rewardAmount} BDT`)
   ].join("\n"), buyerSubmissionKeyboard(pending));
@@ -647,31 +651,38 @@ bot.action("menu:submissions", async (ctx) => {
 bot.action("menu:withdraw", async (ctx) => {
   await ctx.answerCbQuery();
   const user = await ensureUser(ctx.from);
-  await ctx.reply(formatWithdrawHelp(user.id));
+  await showScreen(ctx, formatWithdrawHelp(user.id), homeKeyboard(user));
 });
 
 bot.action("menu:referrals", async (ctx) => {
   await ctx.answerCbQuery();
   const user = await ensureUser(ctx.from);
-  await ctx.reply(formatReferralStats(user.id, ctx.botInfo?.username));
+  await showScreen(ctx, formatReferralStats(user.id, ctx.botInfo?.username), homeKeyboard(user));
 });
 
 bot.action("menu:profile", async (ctx) => {
   await ctx.answerCbQuery();
   const user = await ensureUser(ctx.from);
-  await ctx.reply(formatUserProfile(user.id), mainMenu(user));
+  await showScreen(ctx, formatUserProfile(user.id), mainMenu(user));
 });
 
 bot.action("menu:language", async (ctx) => {
   await ctx.answerCbQuery();
   const user = await ensureUser(ctx.from);
-  await ctx.reply(formatLanguageStatus(user.language), languageKeyboard());
+  await showScreen(ctx, formatLanguageStatus(user.language), languageKeyboard());
 });
 
 bot.action("menu:support", async (ctx) => {
   await ctx.answerCbQuery();
   supportWaiters.add(ctx.from.id);
-  await ctx.reply(userMessages(ctx.from.id).support.prompt);
+  const user = await ensureUser(ctx.from);
+  await showScreen(ctx, userMessages(ctx.from.id).support.prompt, homeKeyboard(user));
+});
+
+bot.action("menu:home", async (ctx) => {
+  await ctx.answerCbQuery();
+  const user = await ensureUser(ctx.from);
+  await showScreen(ctx, homeText(user), mainMenu(user));
 });
 
 bot.action("noop", async (ctx) => {
@@ -700,7 +711,7 @@ bot.action(/^mode:(freelancer|buyer)$/, async (ctx) => {
   const updatedUser = switchMode(user, mode);
   await store.upsertUser(updatedUser);
   await ctx.answerCbQuery(`Mode changed to ${mode}`);
-  await ctx.reply(`Workspace changed: ${formatMode(mode)}`, mainMenu(updatedUser));
+  await showScreen(ctx, `Workspace changed: ${formatMode(mode)}`, mainMenu(updatedUser));
 });
 
 bot.action(/^wizard:approval:(manual|auto)$/, async (ctx) => {
@@ -715,7 +726,7 @@ bot.action(/^wizard:approval:(manual|auto)$/, async (ctx) => {
   draft.approvalType = ctx.match[1] as TaskApprovalType;
   draft.step = "reward";
   taskDrafts.set(ctx.from.id, draft);
-  await ctx.reply(messages.taskWizard.enterReward);
+  await showScreen(ctx, messages.taskWizard.enterReward);
 });
 
 bot.action(/^wizard:type:(telegram_join|website_visit|quiz|manual_proof|app_task|custom)$/, async (ctx) => {
@@ -731,11 +742,11 @@ bot.action(/^wizard:type:(telegram_join|website_visit|quiz|manual_proof|app_task
   taskDrafts.set(ctx.from.id, draft);
 
   if (draft.verificationType) {
-    await ctx.reply(verificationTargetPrompt(draft.verificationType, messages));
+    await showScreen(ctx, verificationTargetPrompt(draft.verificationType, messages));
     return;
   }
 
-  await ctx.reply(messages.taskWizard.enterTitle);
+  await showScreen(ctx, messages.taskWizard.enterTitle);
 });
 
 bot.action(/^wizard:category:(telegram|website|app|social|survey|data_entry|review|quiz|custom)$/, async (ctx) => {
@@ -752,7 +763,7 @@ bot.action(/^wizard:category:(telegram|website|app|social|survey|data_entry|revi
   draft.instructions = defaultInstructionForCategory(draft.category);
   draft.step = "task_type";
   taskDrafts.set(ctx.from.id, draft);
-  await ctx.reply(messages.taskWizard.chooseVerification, verificationMethodKeyboard(draft.category, messages));
+  await showScreen(ctx, messages.taskWizard.chooseVerification, verificationMethodKeyboard(draft.category, messages));
 });
 
 bot.action(/^wizard:method:(auto_join|timer_visit|quiz_answer|manual_proof|webhook|app_tracking|in_app_code)$/, async (ctx) => {
@@ -768,11 +779,11 @@ bot.action(/^wizard:method:(auto_join|timer_visit|quiz_answer|manual_proof|webho
   taskDrafts.set(ctx.from.id, draft);
 
   if (draft.verificationType) {
-    await ctx.reply(verificationTargetPrompt(draft.verificationType, messages));
+    await showScreen(ctx, verificationTargetPrompt(draft.verificationType, messages));
     return;
   }
 
-  await ctx.reply(messages.taskWizard.enterTitle);
+  await showScreen(ctx, messages.taskWizard.enterTitle);
 });
 
 bot.action("wizard:instruction:skip", async (ctx) => {
@@ -785,7 +796,7 @@ bot.action("wizard:instruction:skip", async (ctx) => {
   }
   draft.step = "confirm";
   taskDrafts.set(ctx.from.id, draft);
-  await ctx.reply(formatDraftReview(draft, messages), confirmTaskKeyboard(messages));
+  await showScreen(ctx, formatDraftReview(draft, messages), confirmTaskKeyboard(messages));
 });
 
 bot.action("wizard:instruction:edit", async (ctx) => {
@@ -798,7 +809,7 @@ bot.action("wizard:instruction:edit", async (ctx) => {
   }
   draft.step = "instructions";
   taskDrafts.set(ctx.from.id, draft);
-  await ctx.reply(messages.taskWizard.editInstruction);
+  await showScreen(ctx, messages.taskWizard.editInstruction);
 });
 
 bot.action(/^wizard:verification:(telegram_join|website_visit|website_webhook|app_attribution|in_app_code|quiz)$/, async (ctx) => {
@@ -813,7 +824,7 @@ bot.action(/^wizard:verification:(telegram_join|website_visit|website_webhook|ap
   draft.verificationType = ctx.match[1] as VerificationType;
   draft.step = "target";
   taskDrafts.set(ctx.from.id, draft);
-  await ctx.reply(verificationTargetPrompt(draft.verificationType, messages));
+  await showScreen(ctx, verificationTargetPrompt(draft.verificationType, messages));
 });
 
 bot.action("wizard:confirm", async (ctx) => {
@@ -862,7 +873,7 @@ bot.action("wizard:cancel", async (ctx) => {
   await ctx.answerCbQuery();
   taskDrafts.delete(ctx.from.id);
   const user = await ensureUser(ctx.from);
-  await ctx.reply(getMessages(user.language).taskWizard.cancelled, mainMenu(user));
+  await showScreen(ctx, getMessages(user.language).taskWizard.cancelled, mainMenu(user));
 });
 
 bot.action(/^submission:view:(.+)$/, async (ctx) => {
@@ -894,7 +905,7 @@ bot.action(/^campaign:view:(.+)$/, async (ctx) => {
 
   try {
     const task = getReviewableTask(ctx.match[1], user.id);
-    await ctx.reply(formatCampaignDetail(task.id), campaignActionKeyboard(task.id, task.status));
+    await showScreen(ctx, formatCampaignDetail(task.id), campaignActionKeyboard(task.id, task.status));
   } catch (error) {
     await ctx.reply((error as Error).message);
   }
@@ -906,7 +917,7 @@ bot.action(/^campaign:pause:(.+)$/, async (ctx) => {
 
   try {
     const task = await updateCampaignStatus(ctx.match[1], user.id, "paused");
-    await ctx.reply(`Campaign paused: ${task.title}`, campaignActionKeyboard(task.id, task.status));
+    await showScreen(ctx, `Campaign paused: ${task.title}`, campaignActionKeyboard(task.id, task.status));
   } catch (error) {
     await ctx.reply((error as Error).message);
   }
@@ -918,7 +929,7 @@ bot.action(/^campaign:resume:(.+)$/, async (ctx) => {
 
   try {
     const task = await updateCampaignStatus(ctx.match[1], user.id, "active");
-    await ctx.reply(`Campaign resumed: ${task.title}`, campaignActionKeyboard(task.id, task.status));
+    await showScreen(ctx, `Campaign resumed: ${task.title}`, campaignActionKeyboard(task.id, task.status));
   } catch (error) {
     await ctx.reply((error as Error).message);
   }
@@ -1054,7 +1065,8 @@ bot.action(/^task:(.+)$/, async (ctx) => {
     await ctx.reply("Task not found.");
     return;
   }
-  await ctx.reply(formatTask(task), taskActionButtons(task));
+  const user = await ensureUser(ctx.from);
+  await showScreen(ctx, formatTask(task), taskActionButtons(task, user.language));
 });
 
 bot.action(/^proof:(.+)$/, async (ctx) => {
@@ -1173,23 +1185,57 @@ function userMessages(userId: number) {
   return getMessages(user?.language);
 }
 
+async function showScreen(ctx: Context, text: string, extra?: ReplyMarkup) {
+  if (ctx.callbackQuery) {
+    try {
+      await ctx.editMessageText(text, extra as Parameters<Context["editMessageText"]>[1]);
+      return;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!message.includes("message is not modified")) {
+        console.warn("Falling back to reply for screen update", message);
+      } else {
+        return;
+      }
+    }
+  }
+
+  await ctx.reply(text, extra);
+}
+
+function homeText(user: { mode: "freelancer" | "buyer"; language: "en" | "bn" }) {
+  const messages = getMessages(user.language);
+  return [
+    messages.start.welcome,
+    "",
+    `${messages.start.currentWorkspace} ${formatMode(user.mode)}.`
+  ].join("\n");
+}
+
+function homeKeyboard(user: { language: "en" | "bn" }) {
+  const messages = getMessages(user.language);
+  return Markup.inlineKeyboard([[Markup.button.callback(messages.common.back, "menu:home")]]);
+}
+
 async function showEarn(ctx: Context & { from: TelegramFrom }) {
   const userId = ctx.from.id;
+  const user = store.snapshot().users.find((item) => item.id === userId);
   const messages = userMessages(userId);
   const tasks = visibleTasks(store.snapshot(), userId);
   if (tasks.length === 0) {
-    await ctx.reply(messages.common.noTasksAvailable);
+    await showScreen(ctx, messages.common.noTasksAvailable, user ? homeKeyboard(user) : undefined);
     return;
   }
-  await ctx.reply(messages.earn.chooseCategory, earnCategoryKeyboard(tasks));
+  await showScreen(ctx, messages.earn.chooseCategory, earnCategoryKeyboard(tasks));
 }
 
 async function showEarnCategory(ctx: Context & { from: TelegramFrom }, category: string, page: number) {
   const allTasks = visibleTasks(store.snapshot(), ctx.from.id);
   const filtered = category === "all" ? allTasks : allTasks.filter((task) => task.category === category);
   const messages = userMessages(ctx.from.id);
+  const user = store.snapshot().users.find((item) => item.id === ctx.from.id);
   if (filtered.length === 0) {
-    await ctx.reply(messages.earn.noCategoryTasks, Markup.inlineKeyboard([
+    await showScreen(ctx, messages.earn.noCategoryTasks, Markup.inlineKeyboard([
       [Markup.button.callback(messages.earn.backToCategories, "earn:categories")]
     ]));
     return;
@@ -1199,12 +1245,13 @@ async function showEarnCategory(ctx: Context & { from: TelegramFrom }, category:
   const totalPages = Math.max(Math.ceil(filtered.length / pageSize), 1);
   const safePage = Math.min(Math.max(page, 0), totalPages - 1);
   const tasks = filtered.slice(safePage * pageSize, safePage * pageSize + pageSize);
-  await ctx.reply(
+  await showScreen(
+    ctx,
     messages.earn.taskListTitle
       .replace("{category}", categoryLabel(category))
       .replace("{page}", String(safePage + 1))
       .replace("{totalPages}", String(totalPages)),
-    earnTaskListKeyboard(tasks, category, safePage, totalPages, messages)
+    earnTaskListKeyboard(tasks, category, safePage, totalPages, messages, user)
   );
 }
 
@@ -1272,7 +1319,7 @@ function earnCategoryKeyboard(tasks: Task[]) {
   return Markup.inlineKeyboard(rows);
 }
 
-function earnTaskListKeyboard(tasks: Task[], category: string, page: number, totalPages: number, messages: MessageBundle = t) {
+function earnTaskListKeyboard(tasks: Task[], category: string, page: number, totalPages: number, messages: MessageBundle = t, user?: { language: "en" | "bn" }) {
   const rows = tasks.map((task) => [
     Markup.button.callback(`${task.title} - ${task.rewardPerWorker} BDT`, `task:${task.id}`)
   ]);
@@ -1281,6 +1328,7 @@ function earnTaskListKeyboard(tasks: Task[], category: string, page: number, tot
   if (page + 1 < totalPages) nav.push(Markup.button.callback(messages.buttons.next, `earn:category:${category}:${page + 1}`));
   if (nav.length > 0) rows.push(nav);
   rows.push([Markup.button.callback(messages.earn.backToCategories, "earn:categories")]);
+  if (user) rows.push([Markup.button.callback(messages.common.back, "menu:home")]);
   return Markup.inlineKeyboard(rows);
 }
 
@@ -1518,7 +1566,7 @@ async function closeSupportTicket(ticketId: string) {
 async function startTaskWizard(ctx: Context & { from: TelegramFrom }) {
   const messages = userMessages(ctx.from.id);
   setTaskDraft(ctx.from.id, { step: "task_type" });
-  await ctx.reply(messages.taskWizard.chooseCategory, Markup.inlineKeyboard([
+  await showScreen(ctx, messages.taskWizard.chooseCategory, Markup.inlineKeyboard([
     [Markup.button.callback(`📢 ${messages.categories.telegram}`, "wizard:category:telegram"), Markup.button.callback(`🌐 ${messages.categories.website}`, "wizard:category:website")],
     [Markup.button.callback(`📱 ${messages.categories.app}`, "wizard:category:app"), Markup.button.callback(`📣 ${messages.categories.social}`, "wizard:category:social")],
     [Markup.button.callback(`📝 ${messages.categories.survey}`, "wizard:category:survey"), Markup.button.callback(`⌨️ ${messages.categories.data_entry}`, "wizard:category:data_entry")],
@@ -2082,7 +2130,7 @@ async function sendSubmissionReview(ctx: Context, submissionId: string) {
     return;
   }
 
-  await ctx.reply(formatSubmissionReview(submission.id), submissionReviewKeyboard(submission.id, submission.status));
+  await showScreen(ctx, formatSubmissionReview(submission.id), submissionReviewKeyboard(submission.id, submission.status));
   await sendProofPreview(ctx, submission.proof);
 }
 
@@ -2325,11 +2373,12 @@ function shortId(id: string): string {
 }
 
 function campaignListKeyboard(tasks: Task[]) {
-  return Markup.inlineKeyboard(
-    tasks.slice(0, 10).map((task) => [
+  return Markup.inlineKeyboard([
+    ...tasks.slice(0, 10).map((task) => [
       Markup.button.callback(`${task.title} (${task.status})`, `campaign:view:${task.id}`)
-    ])
-  );
+    ]),
+    [Markup.button.callback("Home", "menu:home")]
+  ]);
 }
 
 function campaignActionKeyboard(taskId: string, status: TaskStatus) {
@@ -2344,6 +2393,7 @@ function campaignActionKeyboard(taskId: string, status: TaskStatus) {
     rows.push([Markup.button.callback("Cancel + Refund Unused", `campaign:cancel:${taskId}`)]);
   }
   rows.push([Markup.button.callback("Submissions", "menu:submissions")]);
+  rows.push([Markup.button.callback("Back to Campaigns", "menu:campaigns"), Markup.button.callback("Home", "menu:home")]);
   return Markup.inlineKeyboard(rows);
 }
 
