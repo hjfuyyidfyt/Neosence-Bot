@@ -42,7 +42,6 @@ export function taskActionButtons(task: Task, language?: LanguageCode) {
   const buttons = task.approvalType === "manual"
     ? [[Markup.button.callback(messages.buttons.submitProof, `proof:${task.id}`)]]
     : [[Markup.button.callback(messages.buttons.verifyNow, `verify:${task.id}`)]];
-  buttons.push([Markup.button.callback(messages.earn.backToCategories, "earn:categories")]);
   return Markup.inlineKeyboard(buttons);
 }
 

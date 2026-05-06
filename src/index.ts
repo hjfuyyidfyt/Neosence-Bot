@@ -44,6 +44,7 @@ const proofWaiters = new Map<number, string>();
 const quizWaiters = new Map<number, string>();
 const codeWaiters = new Map<number, string>();
 const supportWaiters = new Set<number>();
+const earnSkips = new Map<string, Set<string>>();
 type TaskDraftStep =
   | "task_type"
   | "title"
@@ -556,11 +557,26 @@ bot.action("menu:earn", async (ctx) => {
 bot.action(/^earn:category:([^:]+):(\d+)$/, async (ctx) => {
   await ctx.answerCbQuery();
   await ensureUser(ctx.from);
-  await showEarnCategory(ctx, ctx.match[1], Number(ctx.match[2]));
+  await showEarnCategory(ctx, ctx.match[1]);
+});
+
+bot.action(/^earn:skip:([^:]+):(.+)$/, async (ctx) => {
+  await ctx.answerCbQuery("Skipped");
+  await ensureUser(ctx.from);
+  addEarnSkip(ctx.from.id, ctx.match[1], ctx.match[2]);
+  await showEarnCategory(ctx, ctx.match[1]);
+});
+
+bot.action(/^earn:reset:([^:]+)$/, async (ctx) => {
+  await ctx.answerCbQuery("Showing skipped tasks again");
+  await ensureUser(ctx.from);
+  earnSkips.delete(earnSkipKey(ctx.from.id, ctx.match[1]));
+  await showEarnCategory(ctx, ctx.match[1]);
 });
 
 bot.action("earn:categories", async (ctx) => {
   await ctx.answerCbQuery();
+  clearEarnSkips(ctx.from.id);
   await ensureUser(ctx.from);
   await showEarn(ctx);
 });
@@ -1229,30 +1245,25 @@ async function showEarn(ctx: Context & { from: TelegramFrom }) {
   await showScreen(ctx, messages.earn.chooseCategory, earnCategoryKeyboard(tasks));
 }
 
-async function showEarnCategory(ctx: Context & { from: TelegramFrom }, category: string, page: number) {
+async function showEarnCategory(ctx: Context & { from: TelegramFrom }, category: string) {
   const allTasks = visibleTasks(store.snapshot(), ctx.from.id);
-  const filtered = category === "all" ? allTasks : allTasks.filter((task) => task.category === category);
+  const skipped = earnSkips.get(earnSkipKey(ctx.from.id, category)) ?? new Set<string>();
+  const filtered = (category === "all" ? allTasks : allTasks.filter((task) => task.category === category))
+    .filter((task) => !skipped.has(task.id));
   const messages = userMessages(ctx.from.id);
   const user = store.snapshot().users.find((item) => item.id === ctx.from.id);
   if (filtered.length === 0) {
-    await showScreen(ctx, messages.earn.noCategoryTasks, Markup.inlineKeyboard([
-      [Markup.button.callback(messages.earn.backToCategories, "earn:categories")]
-    ]));
+    const rows = [
+      skipped.size > 0 ? [Markup.button.callback("Show skipped again", `earn:reset:${category}`)] : undefined,
+      [Markup.button.callback(messages.earn.backToCategories, "earn:categories")],
+      ...(user ? [[Markup.button.callback(messages.common.back, "menu:home")]] : [])
+    ].filter((row): row is Array<ReturnType<typeof Markup.button.callback>> => Boolean(row));
+    await showScreen(ctx, messages.earn.noCategoryTasks, Markup.inlineKeyboard(rows));
     return;
   }
 
-  const pageSize = 8;
-  const totalPages = Math.max(Math.ceil(filtered.length / pageSize), 1);
-  const safePage = Math.min(Math.max(page, 0), totalPages - 1);
-  const tasks = filtered.slice(safePage * pageSize, safePage * pageSize + pageSize);
-  await showScreen(
-    ctx,
-    messages.earn.taskListTitle
-      .replace("{category}", categoryLabel(category))
-      .replace("{page}", String(safePage + 1))
-      .replace("{totalPages}", String(totalPages)),
-    earnTaskListKeyboard(tasks, category, safePage, totalPages, messages, user)
-  );
+  const task = rankEarnTasks(filtered)[0];
+  await showScreen(ctx, formatEarnFeedTask(task, category), earnFeedKeyboard(task, category, messages, user));
 }
 
 function formatWallet(userId: number, mode: "freelancer" | "buyer"): string {
@@ -1319,17 +1330,59 @@ function earnCategoryKeyboard(tasks: Task[]) {
   return Markup.inlineKeyboard(rows);
 }
 
-function earnTaskListKeyboard(tasks: Task[], category: string, page: number, totalPages: number, messages: MessageBundle = t, user?: { language: "en" | "bn" }) {
-  const rows = tasks.map((task) => [
-    Markup.button.callback(`${task.title} - ${task.rewardPerWorker} BDT`, `task:${task.id}`)
-  ]);
-  const nav = [];
-  if (page > 0) nav.push(Markup.button.callback(messages.buttons.previous, `earn:category:${category}:${page - 1}`));
-  if (page + 1 < totalPages) nav.push(Markup.button.callback(messages.buttons.next, `earn:category:${category}:${page + 1}`));
-  if (nav.length > 0) rows.push(nav);
-  rows.push([Markup.button.callback(messages.earn.backToCategories, "earn:categories")]);
+function rankEarnTasks(tasks: Task[]): Task[] {
+  return [...tasks].sort((left, right) => earnTaskScore(right) - earnTaskScore(left));
+}
+
+function earnTaskScore(task: Task): number {
+  const remainingWorkers = Math.max(task.workerLimit - task.completedCount, 0);
+  const availabilityBonus = Math.min(remainingWorkers / Math.max(task.workerLimit, 1), 1) * 5;
+  const autoBonus = task.approvalType === "auto" ? 10 : 0;
+  const freshnessBonus = Math.max(0, 5 - ageHours(task.createdAt) / 24);
+  const nearFullPenalty = remainingWorkers <= 2 ? 8 : 0;
+  return task.rewardPerWorker * 100 + autoBonus + availabilityBonus + freshnessBonus - nearFullPenalty;
+}
+
+function ageHours(value: string): number {
+  const time = new Date(value).getTime();
+  if (!Number.isFinite(time)) return 0;
+  return Math.max((Date.now() - time) / (60 * 60 * 1000), 0);
+}
+
+function formatEarnFeedTask(task: Task, category: string): string {
+  return [
+    `${categoryLabel(category)} task`,
+    "",
+    formatTask(task)
+  ].join("\n");
+}
+
+function earnFeedKeyboard(task: Task, category: string, messages: MessageBundle = t, user?: { language: "en" | "bn" }) {
+  const actionText = task.approvalType === "manual" ? messages.buttons.submitProof : messages.buttons.verifyNow;
+  const rows = [
+    [Markup.button.callback(actionText, task.approvalType === "manual" ? `proof:${task.id}` : `verify:${task.id}`)],
+    [Markup.button.callback("Skip", `earn:skip:${category}:${task.id}`)],
+    [Markup.button.callback(messages.earn.backToCategories, "earn:categories")]
+  ];
   if (user) rows.push([Markup.button.callback(messages.common.back, "menu:home")]);
   return Markup.inlineKeyboard(rows);
+}
+
+function earnSkipKey(userId: number, category: string): string {
+  return `${userId}:${category}`;
+}
+
+function addEarnSkip(userId: number, category: string, taskId: string) {
+  const key = earnSkipKey(userId, category);
+  const skipped = earnSkips.get(key) ?? new Set<string>();
+  skipped.add(taskId);
+  earnSkips.set(key, skipped);
+}
+
+function clearEarnSkips(userId: number) {
+  for (const key of earnSkips.keys()) {
+    if (key.startsWith(`${userId}:`)) earnSkips.delete(key);
+  }
 }
 
 function formatWithdrawHelp(userId: number): string {
