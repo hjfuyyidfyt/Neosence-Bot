@@ -251,7 +251,9 @@ export function calculateTrustLevel(state: StoreState, userId: number): UserProf
   return "new";
 }
 
-export function calculateTrustScore(state: StoreState, userId: number): { score: number; level: "Starter" | "Bronze" | "Silver" | "Gold" | "Platinum" } {
+export type TrustLevelName = "Starter" | "Bronze" | "Silver" | "Gold" | "Platinum";
+
+export function calculateTrustScore(state: StoreState, userId: number): { score: number; level: TrustLevelName; badge: string; label: string } {
   const submissions = state.submissions.filter((submission) => submission.workerId === userId);
   const approved = submissions.filter((submission) => submission.status === "approved" || submission.status === "auto_approved").length;
   const rejected = submissions.filter((submission) => submission.status === "rejected").length;
@@ -276,15 +278,25 @@ export function calculateTrustScore(state: StoreState, userId: number): { score:
   score -= cancelledCampaigns * 3;
 
   const boundedScore = Math.max(0, Math.min(Math.round(score), 100));
-  return { score: boundedScore, level: trustScoreLevel(boundedScore) };
+  const level = trustScoreLevel(boundedScore);
+  const badge = trustScoreBadge(level);
+  return { score: boundedScore, level, badge, label: `${badge} ${level}` };
 }
 
-export function trustScoreLevel(score: number): "Starter" | "Bronze" | "Silver" | "Gold" | "Platinum" {
+export function trustScoreLevel(score: number): TrustLevelName {
   if (score >= 90) return "Platinum";
   if (score >= 70) return "Gold";
   if (score >= 40) return "Silver";
   if (score >= 20) return "Bronze";
   return "Starter";
+}
+
+export function trustScoreBadge(level: TrustLevelName): string {
+  if (level === "Platinum") return "💎";
+  if (level === "Gold") return "🥇";
+  if (level === "Silver") return "🥈";
+  if (level === "Bronze") return "🥉";
+  return "🌱";
 }
 
 export function visibleTasks(state: StoreState, workerId: number): Task[] {
