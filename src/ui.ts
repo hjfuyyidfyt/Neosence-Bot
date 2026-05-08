@@ -2,6 +2,7 @@ import { Markup } from "telegraf";
 import type { Task, UserProfile } from "./types.js";
 import { getMessages } from "./messages.js";
 import type { LanguageCode } from "./messages.js";
+import { formatMoney } from "./money.js";
 
 export function mainMenu(user: UserProfile) {
   const t = getMessages(user.language);
@@ -56,7 +57,7 @@ export function formatTask(task: Task, language?: LanguageCode): string {
       verification: "ভেরিফিকেশন:",
       visitTimer: "ভিজিট টাইমার:",
       instructions: "ইনস্ট্রাকশন:",
-      buyerApproval: "buyer/admin approval"
+      buyerApproval: "বায়ার/অ্যাডমিন অ্যাপ্রুভাল"
     }
     : {
       category: "Category:",
@@ -75,7 +76,7 @@ export function formatTask(task: Task, language?: LanguageCode): string {
     `💼 ${task.title}`,
     "",
     `${labels.category} ${category}`,
-    `${labels.reward} ${task.rewardPerWorker} BDT`,
+    `${labels.reward} ${formatMoney(task.rewardPerWorker, language)}`,
     `${labels.workers} ${task.completedCount}/${task.workerLimit}`,
     `${labels.verification} ${task.approvalType}${verify}`,
     task.websiteVisitSeconds ? `${labels.visitTimer} ${task.websiteVisitSeconds}s` : undefined,

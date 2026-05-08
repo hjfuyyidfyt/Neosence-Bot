@@ -25,6 +25,7 @@ import {
 } from "./services.js";
 import { formatTask, mainMenu, modeMenu, taskActionButtons } from "./ui.js";
 import { getMessages, t } from "./messages.js";
+import { formatMoney, formatMoneyDetail, roundMoney } from "./money.js";
 import type { MessageBundle } from "./messages.js";
 import type { ApiVerificationPayload, DepositRequest, Dispute, PayoutMethodType, Submission, Task, TaskApprovalType, TaskStatus, TrackedChat, VerificationType, Withdrawal } from "./types.js";
 
@@ -114,7 +115,7 @@ bot.start(async (ctx) => {
     [
       messages.start.welcome,
       "",
-      `${messages.start.currentWorkspace} ${formatMode(user.mode)}.`,
+      `${messages.start.currentWorkspace} ${formatMode(user.mode, user.language)}.`,
       referralMessage
     ].filter(Boolean).join("\n"),
     mainMenu(user)
@@ -218,7 +219,7 @@ bot.command("posttask", async (ctx) => {
     note: "MVP records escrow lock. Connect deposit validation before public launch."
   }));
 
-  await ctx.reply(`${messages.taskWizard.published}\n\n${formatTask(task, user.language)}\n\nEscrow locked: ${escrowRequired(task)} BDT`);
+  await ctx.reply(`${messages.taskWizard.published}\n\n${formatTask(task, user.language)}\n\n${messages.wallet.escrowLocked} ${formatMoneyDetail(escrowRequired(task), user.language)}`);
 });
 
 bot.command("mytasks", async (ctx) => {
@@ -711,7 +712,7 @@ bot.action("withdraw:custom", async (ctx) => {
     return;
   }
   customWithdrawWaiters.add(user.id);
-  await showScreen(ctx, formatCustomWithdrawPrompt(user.id), cancelWithdrawKeyboard(user.language));
+  await showScreen(ctx, formatCustomWithdrawPrompt(user.id, user.language), cancelWithdrawKeyboard(user.language));
 });
 
 bot.action("withdraw:change_payout", async (ctx) => {
@@ -723,7 +724,7 @@ bot.action("withdraw:change_payout", async (ctx) => {
 bot.action("withdraw:history", async (ctx) => {
   await ctx.answerCbQuery();
   const user = await ensureUser(ctx.from);
-  await showScreen(ctx, formatWithdrawalHistory(user.id), walletKeyboard(user));
+  await showScreen(ctx, formatWithdrawalHistory(user.id, user.language), walletKeyboard(user));
 });
 
 bot.action(/^withdraw:method:(upi|trc20|binance_uid|bkash):(all|custom|change)(?::(.+))?$/, async (ctx) => {
@@ -733,7 +734,7 @@ bot.action(/^withdraw:method:(upi|trc20|binance_uid|bkash):(all|custom|change)(?
   const intent = ctx.match[2] as WithdrawIntent;
   const amount = ctx.match[3] ? Number(ctx.match[3]) : undefined;
   payoutSetupWaiters.set(user.id, { method, intent, amount });
-  await showScreen(ctx, payoutAccountPrompt(method), cancelWithdrawKeyboard(user.language));
+  await showScreen(ctx, payoutAccountPrompt(method, user.language), cancelWithdrawKeyboard(user.language));
 });
 
 bot.action(/^withdraw:confirm:(.+)$/, async (ctx) => {
@@ -808,7 +809,7 @@ bot.action(/^mode:(freelancer|buyer)$/, async (ctx) => {
   const updatedUser = switchMode(user, mode);
   await store.upsertUser(updatedUser);
   await ctx.answerCbQuery(`Mode changed to ${mode}`);
-  await showScreen(ctx, `Workspace changed: ${formatMode(mode)}`, mainMenu(updatedUser));
+  await showScreen(ctx, user.language === "bn" ? `ওয়ার্কস্পেস পরিবর্তন হয়েছে: ${formatMode(mode, user.language)}` : `Workspace changed: ${formatMode(mode, user.language)}`, mainMenu(updatedUser));
 });
 
 bot.action(/^wizard:approval:(manual|auto)$/, async (ctx) => {
@@ -963,7 +964,7 @@ bot.action("wizard:confirm", async (ctx) => {
   }));
   taskDrafts.delete(ctx.from.id);
 
-  await ctx.reply(`${messages.taskWizard.published}\n\n${formatTask(task, user.language)}\n\nEscrow locked: ${escrowRequired(task)} BDT`, mainMenu(user));
+  await ctx.reply(`${messages.taskWizard.published}\n\n${formatTask(task, user.language)}\n\n${messages.wallet.escrowLocked} ${formatMoneyDetail(escrowRequired(task), user.language)}`, mainMenu(user));
 });
 
 bot.action("wizard:cancel", async (ctx) => {
@@ -1348,7 +1349,7 @@ function homeText(user: { mode: "freelancer" | "buyer"; language: "en" | "bn" })
   return [
     messages.start.welcome,
     "",
-    `${messages.start.currentWorkspace} ${formatMode(user.mode)}.`
+    `${messages.start.currentWorkspace} ${formatMode(user.mode, user.language)}.`
   ].join("\n");
 }
 
@@ -1357,19 +1358,76 @@ function homeKeyboard(user: { language: "en" | "bn" }) {
   return Markup.inlineKeyboard([[Markup.button.callback(messages.common.back, "menu:home")]]);
 }
 
+function walletLabels(language?: "en" | "bn") {
+  if (language === "bn") {
+    return {
+      addBalance: "ব্যালেন্স যোগ",
+      withdrawAll: "সব উইথড্র",
+      customAmount: "কাস্টম অ্যামাউন্ট",
+      changePayout: "পেআউট পরিবর্তন",
+      setPayout: "পেআউট সেট",
+      withdrawalHistory: "উইথড্র হিস্ট্রি",
+      payout: "পেআউট",
+      notSet: "সেট করা হয়নি",
+      noPayoutSaved: "পেআউট মেথড সেভ করা নেই। একবার বেছে নিন:",
+      confirmWithdraw: "উইথড্র কনফার্ম",
+      customWithdraw: "কাস্টম উইথড্র",
+      sendAmount: "অ্যামাউন্ট পাঠান। যেমন: 500",
+      invalidAmount: "সঠিক অ্যামাউন্ট পাঠান। যেমন: 500",
+      withdrawRequest: "উইথড্র রিকোয়েস্ট",
+      amount: "অ্যামাউন্ট",
+      method: "মেথড",
+      fee: "ফি",
+      receive: "আপনি পাবেন",
+      payoutSaved: "পেআউট সেভ হয়েছে",
+      insufficientBalance: "উইথড্র করার মতো যথেষ্ট ব্যালেন্স নেই।",
+      amountTooLow: "পেআউট ফি কাটার পর অ্যামাউন্ট খুব কম।",
+      withdrawSubmitted: "✅ উইথড্র রিকোয়েস্ট জমা হয়েছে",
+      noWithdrawals: "এখনও কোনো উইথড্র নেই।"
+    };
+  }
+
+  return {
+    addBalance: "Add Balance",
+    withdrawAll: "Withdraw All",
+    customAmount: "Custom Amount",
+    changePayout: "Change Payout",
+    setPayout: "Set Payout",
+    withdrawalHistory: "Withdrawal History",
+    payout: "Payout",
+    notSet: "Not set",
+    noPayoutSaved: "No payout method saved. Choose once:",
+    confirmWithdraw: "Confirm Withdraw",
+    customWithdraw: "Custom Withdraw",
+    sendAmount: "Send amount in BDT. Example: 500",
+    invalidAmount: "Enter a valid amount in BDT. Example: 500",
+    withdrawRequest: "Withdraw Request",
+    amount: "Amount",
+    method: "Method",
+    fee: "Fee",
+    receive: "You receive",
+    payoutSaved: "Payout saved",
+    insufficientBalance: "Insufficient withdrawable balance.",
+    amountTooLow: "Amount is too low after payout fee.",
+    withdrawSubmitted: "✅ Withdrawal request submitted",
+    noWithdrawals: "No withdrawals yet."
+  };
+}
+
 function walletKeyboard(user: { mode: "freelancer" | "buyer"; language: "en" | "bn"; payoutMethod?: unknown }) {
   const messages = getMessages(user.language);
+  const labels = walletLabels(user.language);
   if (user.mode === "buyer") {
     return Markup.inlineKeyboard([
-      [Markup.button.callback("Add Balance", "menu:wallet")],
+      [Markup.button.callback(labels.addBalance, "menu:wallet")],
       [Markup.button.callback(messages.common.back, "menu:home")]
     ]);
   }
 
   return Markup.inlineKeyboard([
-    [Markup.button.callback("Withdraw All", "withdraw:all"), Markup.button.callback("Custom Amount", "withdraw:custom")],
-    [Markup.button.callback(user.payoutMethod ? "Change Payout" : "Set Payout", "withdraw:change_payout")],
-    [Markup.button.callback("Withdrawal History", "withdraw:history")],
+    [Markup.button.callback(labels.withdrawAll, "withdraw:all"), Markup.button.callback(labels.customAmount, "withdraw:custom")],
+    [Markup.button.callback(user.payoutMethod ? labels.changePayout : labels.setPayout, "withdraw:change_payout")],
+    [Markup.button.callback(labels.withdrawalHistory, "withdraw:history")],
     [Markup.button.callback(messages.common.back, "menu:home")]
   ]);
 }
@@ -1395,7 +1453,7 @@ async function showEarnCategory(ctx: Context & { from: TelegramFrom }, category:
   const user = store.snapshot().users.find((item) => item.id === ctx.from.id);
   if (filtered.length === 0) {
     const rows = [
-      skipped.size > 0 ? [Markup.button.callback("Show skipped again", `earn:reset:${category}`)] : undefined,
+      skipped.size > 0 ? [Markup.button.callback(user?.language === "bn" ? "স্কিপ করা টাস্ক দেখান" : "Show skipped again", `earn:reset:${category}`)] : undefined,
       [Markup.button.callback(messages.earn.backToCategories, "earn:categories")],
       ...(user ? [[Markup.button.callback(messages.common.back, "menu:home")]] : [])
     ].filter((row): row is Array<ReturnType<typeof Markup.button.callback>> => Boolean(row));
@@ -1409,22 +1467,23 @@ async function showEarnCategory(ctx: Context & { from: TelegramFrom }, category:
 
 function formatWallet(userId: number, mode: "freelancer" | "buyer", language?: "en" | "bn"): string {
   const messages = getMessages(language);
+  const labels = walletLabels(language);
   const user = store.snapshot().users.find((item) => item.id === userId);
   const wallet = walletSummary(store.snapshot(), userId);
   const hold = Math.max(wallet.available - wallet.withdrawable, 0);
-  const payout = user?.payoutMethod ? formatSavedPayout(user.payoutMethod.type, user.payoutMethod.account) : "Not set";
+  const payout = user?.payoutMethod ? formatSavedPayout(user.payoutMethod.type, user.payoutMethod.account) : labels.notSet;
   const common = [
-    `${messages.wallet.available} ${wallet.available} BDT`,
-    `${messages.wallet.withdrawable} ${wallet.withdrawable} BDT`,
-    `${messages.wallet.pending} ${wallet.pending} BDT`,
-    `Hold: ${hold} BDT`
+    `${messages.wallet.available} ${formatMoney(wallet.available, language)}`,
+    `${messages.wallet.withdrawable} ${formatMoney(wallet.withdrawable, language)}`,
+    `${messages.wallet.pending} ${formatMoney(wallet.pending, language)}`,
+    `${messages.wallet.autoHold} ${formatMoney(hold, language)}`
   ];
 
   if (mode === "buyer") {
     return [
       messages.wallet.buyerTitle,
       ...common,
-      `${messages.wallet.escrowLocked} ${wallet.escrow} BDT`,
+      `${messages.wallet.escrowLocked} ${formatMoney(wallet.escrow, language)}`,
       "",
       `${messages.wallet.deposit}: /depositreq 500 bkash trxid-or-proof-note`
     ].join("\n");
@@ -1434,11 +1493,12 @@ function formatWallet(userId: number, mode: "freelancer" | "buyer", language?: "
     messages.wallet.freelancerTitle,
     ...common,
     "",
-    `Payout: ${payout}`
+    `${labels.payout}: ${payout}`
   ].join("\n");
 }
 
-function formatMode(mode: "freelancer" | "buyer"): string {
+function formatMode(mode: "freelancer" | "buyer", language?: "en" | "bn"): string {
+  if (language === "bn") return mode === "freelancer" ? "ফ্রিল্যান্সার মোড" : "বায়ার মোড";
   return mode === "freelancer" ? "Freelancer Mode" : "Buyer Mode";
 }
 
@@ -1482,7 +1542,7 @@ function ageHours(value: string): number {
 
 function formatEarnFeedTask(task: Task, category: string, language?: "en" | "bn"): string {
   return [
-    `${categoryLabel(category, language)} task`,
+    language === "bn" ? `${categoryLabel(category, language)} টাস্ক` : `${categoryLabel(category, language)} task`,
     "",
     formatTask(task, language)
   ].join("\n");
@@ -1492,7 +1552,7 @@ function earnFeedKeyboard(task: Task, category: string, messages: MessageBundle 
   const actionText = task.approvalType === "manual" ? messages.buttons.submitProof : messages.buttons.verifyNow;
   const rows = [
     [Markup.button.callback(actionText, task.approvalType === "manual" ? `proof:${task.id}` : `verify:${task.id}`)],
-    [Markup.button.callback("Skip", `earn:skip:${category}:${task.id}`)],
+    [Markup.button.callback(user?.language === "bn" ? "স্কিপ" : "Skip", `earn:skip:${category}:${task.id}`)],
     [Markup.button.callback(messages.earn.backToCategories, "earn:categories")]
   ];
   if (user) rows.push([Markup.button.callback(messages.common.back, "menu:home")]);
@@ -1521,7 +1581,7 @@ function formatWithdrawHelp(userId: number, language?: "en" | "bn"): string {
   const wallet = walletSummary(store.snapshot(), userId);
   return [
     messages.wallet.withdrawRequest,
-    `${messages.wallet.withdrawable} ${wallet.withdrawable} BDT`,
+    `${messages.wallet.withdrawable} ${formatMoney(wallet.withdrawable, language)}`,
     "",
     messages.wallet.format,
     "/withdraw 100 bkash:01XXXXXXXXX"
@@ -1542,23 +1602,30 @@ function cancelWithdrawKeyboard(language?: "en" | "bn") {
 }
 
 async function beginWithdraw(ctx: Context, user: { id: number; mode: "freelancer" | "buyer"; language: "en" | "bn"; payoutMethod?: { type: PayoutMethodType; account: string } }, amount: number, intent: WithdrawIntent) {
+  const labels = walletLabels(user.language);
   if (!user.payoutMethod) {
-    if (ctx.from) await showFlowScreen(ctx as Context & { from: TelegramFrom }, "No payout method saved. Choose once:", payoutMethodKeyboard(intent, user.language, amount));
-    else await showScreen(ctx, "No payout method saved. Choose once:", payoutMethodKeyboard(intent, user.language, amount));
+    if (ctx.from) await showFlowScreen(ctx as Context & { from: TelegramFrom }, labels.noPayoutSaved, payoutMethodKeyboard(intent, user.language, amount));
+    else await showScreen(ctx, labels.noPayoutSaved, payoutMethodKeyboard(intent, user.language, amount));
     return;
   }
-  if (ctx.from) await showFlowScreen(ctx as Context & { from: TelegramFrom }, formatWithdrawConfirm(user.payoutMethod.type, user.payoutMethod.account, amount), withdrawConfirmKeyboard(amount, user.language));
-  else await showScreen(ctx, formatWithdrawConfirm(user.payoutMethod.type, user.payoutMethod.account, amount), withdrawConfirmKeyboard(amount, user.language));
+  if (ctx.from) await showFlowScreen(ctx as Context & { from: TelegramFrom }, formatWithdrawConfirm(user.payoutMethod.type, user.payoutMethod.account, amount, user.language), withdrawConfirmKeyboard(amount, user.language));
+  else await showScreen(ctx, formatWithdrawConfirm(user.payoutMethod.type, user.payoutMethod.account, amount, user.language), withdrawConfirmKeyboard(amount, user.language));
 }
 
 function withdrawConfirmKeyboard(amount: number, language?: "en" | "bn") {
   return Markup.inlineKeyboard([
-    [Markup.button.callback("Confirm Withdraw", `withdraw:confirm:${amount}`)],
+    [Markup.button.callback(walletLabels(language).confirmWithdraw, `withdraw:confirm:${amount}`)],
     [Markup.button.callback(getMessages(language).common.cancel, "withdraw:cancel")]
   ]);
 }
 
-function payoutAccountPrompt(method: PayoutMethodType): string {
+function payoutAccountPrompt(method: PayoutMethodType, language?: "en" | "bn"): string {
+  if (language === "bn") {
+    if (method === "upi") return "আপনার UPI ID পাঠান।";
+    if (method === "trc20") return "আপনার TRC20 USDT ওয়ালেট অ্যাড্রেস পাঠান।";
+    if (method === "binance_uid") return "আপনার Binance UID পাঠান।";
+    return "আপনার bKash নাম্বার পাঠান।";
+  }
   if (method === "upi") return "Send your UPI ID.";
   if (method === "trc20") return "Send your TRC20 USDT wallet address.";
   if (method === "binance_uid") return "Send your Binance UID.";
@@ -1570,7 +1637,7 @@ async function handlePayoutAccountMessage(ctx: Context & { from: TelegramFrom; m
   const user = await ensureUser(ctx.from);
   await deleteUserInputMessage(ctx);
   if (!account) {
-    await showFlowScreen(ctx, payoutAccountPrompt(setup.method), cancelWithdrawKeyboard(user.language));
+    await showFlowScreen(ctx, payoutAccountPrompt(setup.method, user.language), cancelWithdrawKeyboard(user.language));
     return;
   }
 
@@ -1584,7 +1651,7 @@ async function handlePayoutAccountMessage(ctx: Context & { from: TelegramFrom; m
 
   if (setup.intent === "custom") {
     customWithdrawWaiters.add(user.id);
-    await showFlowScreen(ctx, `Payout saved: ${formatSavedPayout(setup.method, account)}\n\n${formatCustomWithdrawPrompt(user.id)}`, cancelWithdrawKeyboard(user.language));
+    await showFlowScreen(ctx, `${walletLabels(user.language).payoutSaved}: ${formatSavedPayout(setup.method, account)}\n\n${formatCustomWithdrawPrompt(user.id, user.language)}`, cancelWithdrawKeyboard(user.language));
     return;
   }
 
@@ -1593,7 +1660,7 @@ async function handlePayoutAccountMessage(ctx: Context & { from: TelegramFrom; m
     return;
   }
 
-  await showFlowScreen(ctx, `Payout saved: ${formatSavedPayout(setup.method, account)}`, walletKeyboard(updatedUser));
+  await showFlowScreen(ctx, `${walletLabels(user.language).payoutSaved}: ${formatSavedPayout(setup.method, account)}`, walletKeyboard(updatedUser));
 }
 
 async function handleCustomWithdrawAmount(ctx: Context & { from: TelegramFrom; message: unknown }) {
@@ -1602,33 +1669,36 @@ async function handleCustomWithdrawAmount(ctx: Context & { from: TelegramFrom; m
   const amount = Number(text);
   await deleteUserInputMessage(ctx);
   if (!Number.isFinite(amount) || amount <= 0) {
-    await showFlowScreen(ctx, "Enter a valid amount. Example: 500", cancelWithdrawKeyboard(user.language));
+    await showFlowScreen(ctx, walletLabels(user.language).invalidAmount, cancelWithdrawKeyboard(user.language));
     return;
   }
   customWithdrawWaiters.delete(user.id);
   await beginWithdraw(ctx, user, amount, "custom");
 }
 
-function formatCustomWithdrawPrompt(userId: number): string {
+function formatCustomWithdrawPrompt(userId: number, language?: "en" | "bn"): string {
+  const labels = walletLabels(language);
+  const messages = getMessages(language);
   const wallet = walletSummary(store.snapshot(), userId);
   return [
-    "Custom Withdraw",
-    `Withdrawable: ${wallet.withdrawable} BDT`,
+    labels.customWithdraw,
+    `${messages.wallet.withdrawable} ${formatMoney(wallet.withdrawable, language)}`,
     "",
-    "Send amount. Example: 500"
+    labels.sendAmount
   ].join("\n");
 }
 
-function formatWithdrawConfirm(method: PayoutMethodType, account: string, amount: number): string {
+function formatWithdrawConfirm(method: PayoutMethodType, account: string, amount: number, language?: "en" | "bn"): string {
+  const labels = walletLabels(language);
   const fee = calculateWithdrawFee(method, amount);
   const receive = Math.max(amount - fee, 0);
   return [
-    "Withdraw Request",
-    `Amount: ${roundMoney(amount)} BDT`,
-    `Method: ${payoutMethodLabel(method)}`,
-    `Payout: ${maskPayoutAccount(account)}`,
-    `Fee: ${roundMoney(fee)} BDT`,
-    `You receive: ${roundMoney(receive)} BDT`
+    labels.withdrawRequest,
+    `${labels.amount}: ${formatMoneyDetail(amount, language)}`,
+    `${labels.method}: ${payoutMethodLabel(method)}`,
+    `${labels.payout}: ${maskPayoutAccount(account)}`,
+    `${labels.fee}: ${formatMoneyDetail(fee, language)}`,
+    `${labels.receive}: ${formatMoneyDetail(receive, language)}`
   ].join("\n");
 }
 
@@ -1636,22 +1706,23 @@ async function submitSavedWithdrawal(ctx: Context, userId: number, amount: numbe
   const state = store.snapshot();
   const user = state.users.find((item) => item.id === userId);
   const userContext = ctx.from ? (ctx as Context & { from: TelegramFrom }) : undefined;
+  const labels = walletLabels(user?.language);
   if (!user?.payoutMethod) {
-    if (userContext) await showFlowScreen(userContext, "No payout method saved.", undefined);
-    else await ctx.reply("No payout method saved.");
+    if (userContext) await showFlowScreen(userContext, labels.noPayoutSaved, undefined);
+    else await ctx.reply(labels.noPayoutSaved);
     return;
   }
   const wallet = walletSummary(state, userId);
   if (!Number.isFinite(amount) || amount <= 0 || wallet.withdrawable < amount) {
-    const text = `Insufficient withdrawable balance. Current withdrawable: ${wallet.withdrawable} BDT`;
+    const text = `${labels.insufficientBalance}\n${getMessages(user.language).wallet.withdrawable} ${formatMoney(wallet.withdrawable, user.language)}`;
     if (userContext) await showFlowScreen(userContext, text, walletKeyboard(user));
     else await ctx.reply(text);
     return;
   }
   const fee = calculateWithdrawFee(user.payoutMethod.type, amount);
   if (amount - fee <= 0) {
-    if (userContext) await showFlowScreen(userContext, "Amount is too low after payout fee.", walletKeyboard(user));
-    else await ctx.reply("Amount is too low after payout fee.");
+    if (userContext) await showFlowScreen(userContext, labels.amountTooLow, walletKeyboard(user));
+    else await ctx.reply(labels.amountTooLow);
     return;
   }
   const method = `${payoutMethodLabel(user.payoutMethod.type)}:${user.payoutMethod.account} | fee ${roundMoney(fee)} BDT | receive ${roundMoney(amount - fee)} BDT`;
@@ -1663,18 +1734,19 @@ async function submitSavedWithdrawal(ctx: Context, userId: number, amount: numbe
     amount,
     note: method
   }));
-  const text = `✅ Withdrawal request submitted\n\nID: ${withdrawal.id}\nYou receive: ${roundMoney(amount - fee)} BDT`;
+  const text = `${labels.withdrawSubmitted}\n\nID: ${withdrawal.id}\n${labels.receive}: ${formatMoneyDetail(amount - fee, user.language)}`;
   if (userContext) await showFlowScreen(userContext, text, walletKeyboard(user));
   else await ctx.reply(text);
 }
 
-function formatWithdrawalHistory(userId: number): string {
+function formatWithdrawalHistory(userId: number, language?: "en" | "bn"): string {
+  const labels = walletLabels(language);
   const withdrawals = store.snapshot().withdrawals.filter((item) => item.userId === userId);
-  if (withdrawals.length === 0) return "No withdrawals yet.";
+  if (withdrawals.length === 0) return labels.noWithdrawals;
   return [
-    "Withdrawal History",
+    labels.withdrawalHistory,
     "",
-    ...withdrawals.slice(-8).reverse().map((item) => `- ${item.id}: ${item.amount} BDT, ${item.status}`)
+    ...withdrawals.slice(-8).reverse().map((item) => `- ${item.id}: ${formatMoneyDetail(item.amount, language)}, ${item.status}`)
   ].join("\n");
 }
 
@@ -1708,10 +1780,6 @@ function maskPayoutAccount(account: string): string {
   return `${account.slice(0, 3)}••••${account.slice(-4)}`;
 }
 
-function roundMoney(value: number): number {
-  return Math.round(value * 100) / 100;
-}
-
 function formatUserProfile(userId: number, language?: "en" | "bn"): string {
   const messages = getMessages(language);
   const state = store.snapshot();
@@ -1726,18 +1794,21 @@ function formatUserProfile(userId: number, language?: "en" | "bn"): string {
   const disputes = state.disputes.filter((dispute) => dispute.workerId === userId);
   const nameLine = `${user?.firstName ?? "Unknown"}${user?.username ? ` (@${user.username})` : ""}`;
   const labels = language === "bn"
-    ? { mode: "মোড:", trust: "ট্রাস্ট:", approved: "Approved:", rejected: "Rejected:", disputes: "Disputes:", activeCampaigns: "Active campaigns:", referrals: "Referrals:" }
+    ? { mode: "মোড:", trust: "ট্রাস্ট:", approved: "অ্যাপ্রুভড:", rejected: "রিজেক্টেড:", disputes: "ডিসপিউট:", activeCampaigns: "অ্যাকটিভ ক্যাম্পেইন:", referrals: "রেফারেল:" }
     : { mode: "Mode:", trust: "Trust:", approved: "Approved:", rejected: "Rejected:", disputes: "Disputes:", activeCampaigns: "Active campaigns:", referrals: "Referrals:" };
+  const modeLabel = language === "bn"
+    ? (user?.mode === "buyer" ? "বায়ার" : "ফ্রিল্যান্সার")
+    : (user?.mode ?? "N/A");
 
   return [
     messages.profile.title,
     nameLine,
-    `${labels.mode} ${user?.mode ?? "N/A"}`,
+    `${labels.mode} ${modeLabel}`,
     `${labels.trust} ${trust.label} ${trust.score}/100`,
     "",
     messages.profile.wallet,
-    `${messages.wallet.available} ${wallet.available} BDT`,
-    `${messages.wallet.withdrawable} ${wallet.withdrawable} BDT`,
+    `${messages.wallet.available} ${formatMoney(wallet.available, language)}`,
+    `${messages.wallet.withdrawable} ${formatMoney(wallet.withdrawable, language)}`,
     "",
     messages.profile.activity,
     `${labels.approved} ${approved}`,
@@ -1883,30 +1954,35 @@ function formatReferralStats(userId: number, botUsername?: string, language?: "e
   const credited = referrals.filter((referral) => referral.status === "credited");
   const earned = credited.reduce((sum, referral) => sum + referral.bonusAmount, 0);
   const link = botUsername ? `https://t.me/${botUsername}?start=ref_${userId}` : `https://t.me/YOUR_BOT_USERNAME?start=ref_${userId}`;
+  const labels = language === "bn"
+    ? { invites: "ইনভাইট:", credited: "ক্রেডিটেড:", earning: "রেফারেল আর্নিং:", inviteLink: "ইনভাইট লিংক:" }
+    : { invites: "Invites:", credited: "Credited:", earning: "Referral earning:", inviteLink: "Invite link:" };
 
   return [
     messages.menu.referrals,
     `${messages.wallet.userId} ${userId}`,
-    `Invites: ${referrals.length}`,
-    `Credited: ${credited.length}`,
-    `Referral earning: ${Math.round(earned * 100) / 100} BDT`,
+    `${labels.invites} ${referrals.length}`,
+    `${labels.credited} ${credited.length}`,
+    `${labels.earning} ${formatMoney(earned, language)}`,
     "",
-    "Invite link:",
+    labels.inviteLink,
     link
   ].join("\n");
 }
 
 async function handleSupportMessage(ctx: Context & { from: TelegramFrom; message: unknown }) {
+  const user = store.snapshot().users.find((item) => item.id === ctx.from.id);
+  const language = user?.language;
   const message = extractText(ctx.message);
   if (!message) {
-    await ctx.reply("Send a text message for the support ticket.");
+    await ctx.reply(language === "bn" ? "সাপোর্ট টিকিটের জন্য টেক্সট মেসেজ পাঠান।" : "Send a text message for the support ticket.");
     return;
   }
 
   const ticket = createSupportTicket(ctx.from.id, message.slice(0, 1500));
   await store.addSupportTicket(ticket);
   supportWaiters.delete(ctx.from.id);
-  await ctx.reply(`Support ticket created: ${ticket.id}`);
+  await ctx.reply(language === "bn" ? `সাপোর্ট টিকিট তৈরি হয়েছে: ${ticket.id}` : `Support ticket created: ${ticket.id}`);
 }
 
 function formatOpenTickets(): string {

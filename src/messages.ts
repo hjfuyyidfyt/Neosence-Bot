@@ -295,14 +295,14 @@ const banglaMessages: MessageBundle = {
     buyerTitle: "💰 বায়ার ব্যালেন্স",
     freelancerTitle: "💰 ফ্রিল্যান্সার ওয়ালেট",
     userId: "ইউজার ID:",
-    available: "ব্যালেন্স:",
+    available: "এভেইলেবল:",
     pending: "পেন্ডিং:",
-    withdrawable: "উত্তোলনযোগ্য:",
-    escrowLocked: "Escrow লক:",
+    withdrawable: "উইথড্র করা যাবে:",
+    escrowLocked: "এসক্রো লক:",
     autoHold: "হোল্ড:",
     deposit: "ডিপোজিট",
-    depositHelp: "Admin/payment number এ payment পাঠিয়ে request submit করুন:",
-    withdraw: "টাকা তুলুন",
+    depositHelp: "অ্যাডমিন/পেমেন্ট নাম্বারে পেমেন্ট পাঠিয়ে রিকোয়েস্ট সাবমিট করুন:",
+    withdraw: "উইথড্র",
     withdrawRequest: "উইথড্র রিকোয়েস্ট",
     format: "ফরম্যাট:"
   },
@@ -312,7 +312,7 @@ const banglaMessages: MessageBundle = {
     activity: "📌 কার্যক্রম"
   },
   support: {
-    prompt: "🛟 আপনার support message পাঠান। আপনার next message support ticket তৈরি করবে।"
+    prompt: "🛟 আপনার সাপোর্ট মেসেজ পাঠান। পরের মেসেজ দিয়ে সাপোর্ট টিকিট তৈরি হবে।"
   },
   campaigns: {
     none: "এখনো কোনো campaign নেই। প্রথম campaign তৈরি করতে Post Task ব্যবহার করুন।",
