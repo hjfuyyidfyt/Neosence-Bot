@@ -190,14 +190,14 @@ const banglaMessages: MessageBundle = {
     campaigns: "📊 ক্যাম্পেইন",
     submissions: "🧾 সাবমিশন",
     balance: "💰 ব্যালেন্স",
-    freelancerMode: "🔄 Freelancer Mode",
-    buyerMode: "🔄 Buyer Mode",
+    freelancerMode: "🔄 ফ্রিল্যান্সার মোড",
+    buyerMode: "🔄 বায়ার মোড",
     profile: "👤 প্রোফাইল",
     support: "🛟 সাপোর্ট",
-    earnMoney: "💼 Earn Money",
-    myJobs: "📌 My Jobs",
+    earnMoney: "💼 আয় করুন",
+    myJobs: "📌 আমার কাজ",
     wallet: "💰 ওয়ালেট",
-    withdraw: "🏦 Withdraw",
+    withdraw: "🏦 টাকা তুলুন",
     referrals: "🤝 রেফারেল",
     workAsFreelancer: "💼 Freelancer হিসেবে কাজ",
     hireAsBuyer: "📣 Buyer হিসেবে হায়ার",
@@ -211,20 +211,20 @@ const banglaMessages: MessageBundle = {
     useTemplate: "Template ব্যবহার",
     editInstruction: "Instruction এডিট",
     publishTask: "টাস্ক পাবলিশ",
-    manualApproval: "Manual Approval",
-    autoVerification: "Auto Verification"
+    manualApproval: "ম্যানুয়াল approval",
+    autoVerification: "অটো verification"
   },
   categories: {
     all: "সব",
-    telegram: "Telegram",
-    website: "Website",
-    app: "App",
-    social: "Social",
-    survey: "Survey",
-    data_entry: "Data Entry",
-    review: "Review",
-    quiz: "Quiz / Code",
-    custom: "Custom"
+    telegram: "টেলিগ্রাম",
+    website: "ওয়েবসাইট",
+    app: "অ্যাপ",
+    social: "সোশ্যাল",
+    survey: "সার্ভে",
+    data_entry: "ডাটা এন্ট্রি",
+    review: "রিভিউ",
+    quiz: "কুইজ / কোড",
+    custom: "কাস্টম"
   },
   verificationMethods: {
     autoJoin: "Auto Join",
@@ -292,24 +292,24 @@ const banglaMessages: MessageBundle = {
     myJobsHelp: "📌 আপনার accepted jobs এবং submissions দেখতে /mytasks ব্যবহার করুন।"
   },
   wallet: {
-    buyerTitle: "💰 Buyer Balance",
-    freelancerTitle: "💰 Freelancer Wallet",
-    userId: "User ID:",
+    buyerTitle: "💰 বায়ার ব্যালেন্স",
+    freelancerTitle: "💰 ফ্রিল্যান্সার ওয়ালেট",
+    userId: "ইউজার ID:",
     available: "Available:",
     pending: "Pending:",
-    withdrawable: "Withdrawable:",
+    withdrawable: "তোলার মতো:",
     escrowLocked: "Escrow locked:",
     autoHold: "Auto earning hold:",
-    deposit: "Deposit",
+    deposit: "ডিপোজিট",
     depositHelp: "Admin/payment number এ payment পাঠিয়ে request submit করুন:",
-    withdraw: "Withdraw",
+    withdraw: "টাকা তুলুন",
     withdrawRequest: "Withdraw Request",
-    format: "Format:"
+    format: "ফরম্যাট:"
   },
   profile: {
-    title: "👤 Neosence Profile",
-    wallet: "Wallet",
-    activity: "Activity"
+    title: "👤 প্রোফাইল",
+    wallet: "💰 ওয়ালেট",
+    activity: "📌 কার্যক্রম"
   },
   support: {
     prompt: "🛟 আপনার support message পাঠান। আপনার next message support ticket তৈরি করবে।"

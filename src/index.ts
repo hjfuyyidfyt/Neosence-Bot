@@ -125,7 +125,7 @@ bot.command("mode", async (ctx) => {
 
 bot.command("language", async (ctx) => {
   const user = await ensureUser(ctx.from);
-  await ctx.reply(formatLanguageStatus(user.language), languageKeyboard());
+  await ctx.reply(formatLanguageStatus(user.language), languageKeyboard(user.language));
 });
 
 bot.command("earn", async (ctx) => {
@@ -135,12 +135,12 @@ bot.command("earn", async (ctx) => {
 
 bot.command("wallet", async (ctx) => {
   const user = await ensureUser(ctx.from);
-  await ctx.reply(formatWallet(user.id, user.mode));
+  await ctx.reply(formatWallet(user.id, user.mode, user.language));
 });
 
 bot.command("profile", async (ctx) => {
   const user = await ensureUser(ctx.from);
-  await ctx.reply(formatUserProfile(user.id), mainMenu(user));
+  await ctx.reply(formatUserProfile(user.id, user.language), mainMenu(user));
 });
 
 bot.command("cancel", async (ctx) => {
@@ -212,7 +212,7 @@ bot.command("posttask", async (ctx) => {
     note: "MVP records escrow lock. Connect deposit validation before public launch."
   }));
 
-  await ctx.reply(`${messages.taskWizard.published}\n\n${formatTask(task)}\n\nEscrow locked: ${escrowRequired(task)} BDT`);
+  await ctx.reply(`${messages.taskWizard.published}\n\n${formatTask(task, user.language)}\n\nEscrow locked: ${escrowRequired(task)} BDT`);
 });
 
 bot.command("mytasks", async (ctx) => {
@@ -596,7 +596,7 @@ bot.action("menu:post", async (ctx) => {
 bot.action("menu:wallet", async (ctx) => {
   await ctx.answerCbQuery();
   const user = await ensureUser(ctx.from);
-  await showScreen(ctx, formatWallet(user.id, user.mode), homeKeyboard(user));
+  await showScreen(ctx, formatWallet(user.id, user.mode, user.language), homeKeyboard(user));
 });
 
 bot.action("menu:mode", async (ctx) => {
@@ -642,7 +642,7 @@ bot.action("menu:campaigns", async (ctx) => {
     return;
   }
 
-  await showScreen(ctx, formatCampaignList(tasks), campaignListKeyboard(tasks));
+  await showScreen(ctx, formatCampaignList(tasks, user.language), campaignListKeyboard(tasks, user.language));
 });
 
 bot.action("menu:campaign_history", async (ctx) => {
@@ -657,7 +657,7 @@ bot.action("menu:campaign_history", async (ctx) => {
     return;
   }
 
-  await showScreen(ctx, formatCampaignHistory(tasks), campaignHistoryKeyboard());
+  await showScreen(ctx, formatCampaignHistory(tasks, user.language), campaignHistoryKeyboard(user.language));
 });
 
 bot.action("menu:submissions", async (ctx) => {
@@ -683,25 +683,25 @@ bot.action("menu:submissions", async (ctx) => {
 bot.action("menu:withdraw", async (ctx) => {
   await ctx.answerCbQuery();
   const user = await ensureUser(ctx.from);
-  await showScreen(ctx, formatWithdrawHelp(user.id), homeKeyboard(user));
+  await showScreen(ctx, formatWithdrawHelp(user.id, user.language), homeKeyboard(user));
 });
 
 bot.action("menu:referrals", async (ctx) => {
   await ctx.answerCbQuery();
   const user = await ensureUser(ctx.from);
-  await showScreen(ctx, formatReferralStats(user.id, ctx.botInfo?.username), homeKeyboard(user));
+  await showScreen(ctx, formatReferralStats(user.id, ctx.botInfo?.username, user.language), homeKeyboard(user));
 });
 
 bot.action("menu:profile", async (ctx) => {
   await ctx.answerCbQuery();
   const user = await ensureUser(ctx.from);
-  await showScreen(ctx, formatUserProfile(user.id), mainMenu(user));
+  await showScreen(ctx, formatUserProfile(user.id, user.language), mainMenu(user));
 });
 
 bot.action("menu:language", async (ctx) => {
   await ctx.answerCbQuery();
   const user = await ensureUser(ctx.from);
-  await showScreen(ctx, formatLanguageStatus(user.language), languageKeyboard());
+  await showScreen(ctx, formatLanguageStatus(user.language), languageKeyboard(user.language));
 });
 
 bot.action("menu:support", async (ctx) => {
@@ -898,7 +898,7 @@ bot.action("wizard:confirm", async (ctx) => {
   }));
   taskDrafts.delete(ctx.from.id);
 
-  await ctx.reply(`${messages.taskWizard.published}\n\n${formatTask(task)}\n\nEscrow locked: ${escrowRequired(task)} BDT`, mainMenu(user));
+  await ctx.reply(`${messages.taskWizard.published}\n\n${formatTask(task, user.language)}\n\nEscrow locked: ${escrowRequired(task)} BDT`, mainMenu(user));
 });
 
 bot.action("wizard:cancel", async (ctx) => {
@@ -937,7 +937,7 @@ bot.action(/^campaign:view:(.+)$/, async (ctx) => {
 
   try {
     const task = getReviewableTask(ctx.match[1], user.id);
-    await showScreen(ctx, formatCampaignDetail(task.id), campaignActionKeyboard(task.id, task.status));
+    await showScreen(ctx, formatCampaignDetail(task.id, user.language), campaignActionKeyboard(task.id, task.status, user.language));
   } catch (error) {
     await ctx.reply((error as Error).message);
   }
@@ -949,7 +949,7 @@ bot.action(/^campaign:pause:(.+)$/, async (ctx) => {
 
   try {
     const task = await updateCampaignStatus(ctx.match[1], user.id, "paused");
-    await showScreen(ctx, `Campaign paused: ${task.title}`, campaignActionKeyboard(task.id, task.status));
+    await showScreen(ctx, `${getMessages(user.language).campaigns.paused} ${task.title}`, campaignActionKeyboard(task.id, task.status, user.language));
   } catch (error) {
     await ctx.reply((error as Error).message);
   }
@@ -961,7 +961,7 @@ bot.action(/^campaign:resume:(.+)$/, async (ctx) => {
 
   try {
     const task = await updateCampaignStatus(ctx.match[1], user.id, "active");
-    await showScreen(ctx, `Campaign resumed: ${task.title}`, campaignActionKeyboard(task.id, task.status));
+    await showScreen(ctx, `${getMessages(user.language).campaigns.resumed} ${task.title}`, campaignActionKeyboard(task.id, task.status, user.language));
   } catch (error) {
     await ctx.reply((error as Error).message);
   }
@@ -973,7 +973,7 @@ bot.action(/^campaign:cancel:(.+)$/, async (ctx) => {
 
   try {
     const result = await cancelCampaign(ctx.match[1], user.id);
-    await showScreen(ctx, `Campaign cancelled: ${result.task.title}\nRefunded: ${result.refundAmount} BDT`, campaignHistoryKeyboard());
+    await showScreen(ctx, `Campaign cancelled: ${result.task.title}\nRefunded: ${result.refundAmount} BDT`, campaignHistoryKeyboard(user.language));
   } catch (error) {
     await ctx.reply((error as Error).message);
   }
@@ -1098,7 +1098,7 @@ bot.action(/^task:(.+)$/, async (ctx) => {
     return;
   }
   const user = await ensureUser(ctx.from);
-  await showScreen(ctx, formatTask(task), taskActionButtons(task, user.language));
+  await showScreen(ctx, formatTask(task, user.language), taskActionButtons(task, user.language));
 });
 
 bot.action(/^proof:(.+)$/, async (ctx) => {
@@ -1258,7 +1258,7 @@ async function showEarn(ctx: Context & { from: TelegramFrom }) {
     await showScreen(ctx, messages.common.noTasksAvailable, user ? homeKeyboard(user) : undefined);
     return;
   }
-  await showScreen(ctx, messages.earn.chooseCategory, earnCategoryKeyboard(tasks));
+  await showScreen(ctx, messages.earn.chooseCategory, earnCategoryKeyboard(tasks, user?.language));
 }
 
 async function showEarnCategory(ctx: Context & { from: TelegramFrom }, category: string) {
@@ -1279,36 +1279,37 @@ async function showEarnCategory(ctx: Context & { from: TelegramFrom }, category:
   }
 
   const task = rankEarnTasks(filtered)[0];
-  await showScreen(ctx, formatEarnFeedTask(task, category), earnFeedKeyboard(task, category, messages, user));
+  await showScreen(ctx, formatEarnFeedTask(task, category, user?.language), earnFeedKeyboard(task, category, messages, user));
 }
 
-function formatWallet(userId: number, mode: "freelancer" | "buyer"): string {
+function formatWallet(userId: number, mode: "freelancer" | "buyer", language?: "en" | "bn"): string {
+  const messages = getMessages(language);
   const wallet = walletSummary(store.snapshot(), userId);
   const common = [
-    `User ID: ${userId}`,
-    `Available: ${wallet.available} BDT`,
-    `Pending: ${wallet.pending} BDT`,
-    `Withdrawable: ${wallet.withdrawable} BDT`,
-    `Escrow locked: ${wallet.escrow} BDT`,
-    `Auto earning hold: ${Math.max(wallet.available - wallet.withdrawable, 0)} BDT`
+    `${messages.wallet.userId} ${userId}`,
+    `${messages.wallet.available} ${wallet.available} BDT`,
+    `${messages.wallet.pending} ${wallet.pending} BDT`,
+    `${messages.wallet.withdrawable} ${wallet.withdrawable} BDT`,
+    `${messages.wallet.escrowLocked} ${wallet.escrow} BDT`,
+    `${messages.wallet.autoHold} ${Math.max(wallet.available - wallet.withdrawable, 0)} BDT`
   ];
 
   if (mode === "buyer") {
     return [
-      "💰 Buyer Balance",
+      messages.wallet.buyerTitle,
       ...common,
       "",
-      "Deposit",
-      "Send payment to admin/payment number, then submit request:",
+      messages.wallet.deposit,
+      messages.wallet.depositHelp,
       "/depositreq 500 bkash trxid-or-proof-note"
     ].join("\n");
   }
 
   return [
-    "💰 Freelancer Wallet",
+    messages.wallet.freelancerTitle,
     ...common,
     "",
-    "Withdraw",
+    messages.wallet.withdraw,
     "/withdraw 100 bkash:01XXXXXXXXX"
   ].join("\n");
 }
@@ -1319,30 +1320,19 @@ function formatMode(mode: "freelancer" | "buyer"): string {
 
 const earnCategories = ["telegram", "website", "app", "social", "survey", "data_entry", "review", "quiz", "custom"];
 
-function categoryLabel(category: string): string {
-  const labels: Record<string, string> = {
-    all: "All",
-    telegram: "Telegram",
-    website: "Website",
-    app: "App",
-    social: "Social",
-    survey: "Survey",
-    data_entry: "Data Entry",
-    review: "Review",
-    quiz: "Quiz / Code",
-    custom: "Custom"
-  };
-  return labels[category] ?? category;
+function categoryLabel(category: string, language?: "en" | "bn"): string {
+  const messages = getMessages(language);
+  return messages.categories[category as keyof typeof messages.categories] ?? category;
 }
 
-function earnCategoryKeyboard(tasks: Task[]) {
+function earnCategoryKeyboard(tasks: Task[], language?: "en" | "bn") {
   const rows = earnCategories
     .map((category) => {
       const count = tasks.filter((task) => task.category === category).length;
-      return count > 0 ? [Markup.button.callback(`${categoryLabel(category)} (${count})`, `earn:category:${category}:0`)] : undefined;
+      return count > 0 ? [Markup.button.callback(`${categoryLabel(category, language)} (${count})`, `earn:category:${category}:0`)] : undefined;
     })
     .filter((row): row is Array<ReturnType<typeof Markup.button.callback>> => Boolean(row));
-  rows.push([Markup.button.callback(`All Tasks (${tasks.length})`, "earn:category:all:0")]);
+  rows.push([Markup.button.callback(`${categoryLabel("all", language)} Tasks (${tasks.length})`, "earn:category:all:0")]);
   return Markup.inlineKeyboard(rows);
 }
 
@@ -1366,11 +1356,11 @@ function ageHours(value: string): number {
   return Math.max((Date.now() - time) / (60 * 60 * 1000), 0);
 }
 
-function formatEarnFeedTask(task: Task, category: string): string {
+function formatEarnFeedTask(task: Task, category: string, language?: "en" | "bn"): string {
   return [
-    `${categoryLabel(category)} task`,
+    `${categoryLabel(category, language)} task`,
     "",
-    formatTask(task)
+    formatTask(task, language)
   ].join("\n");
 }
 
@@ -1402,18 +1392,20 @@ function clearEarnSkips(userId: number) {
   }
 }
 
-function formatWithdrawHelp(userId: number): string {
+function formatWithdrawHelp(userId: number, language?: "en" | "bn"): string {
+  const messages = getMessages(language);
   const wallet = walletSummary(store.snapshot(), userId);
   return [
-    "Withdraw Request",
-    `Withdrawable: ${wallet.withdrawable} BDT`,
+    messages.wallet.withdrawRequest,
+    `${messages.wallet.withdrawable} ${wallet.withdrawable} BDT`,
     "",
-    "Format:",
+    messages.wallet.format,
     "/withdraw 100 bkash:01XXXXXXXXX"
   ].join("\n");
 }
 
-function formatUserProfile(userId: number): string {
+function formatUserProfile(userId: number, language?: "en" | "bn"): string {
+  const messages = getMessages(language);
   const state = store.snapshot();
   const user = state.users.find((item) => item.id === userId);
   const wallet = walletSummary(state, userId);
@@ -1425,36 +1417,40 @@ function formatUserProfile(userId: number): string {
   const referrals = state.referrals.filter((referral) => referral.referrerId === userId);
   const disputes = state.disputes.filter((dispute) => dispute.workerId === userId);
   const nameLine = `${user?.firstName ?? "Unknown"}${user?.username ? ` (@${user.username})` : ""}`;
+  const labels = language === "bn"
+    ? { mode: "মোড:", trust: "ট্রাস্ট:", approved: "Approved:", rejected: "Rejected:", disputes: "Disputes:", activeCampaigns: "Active campaigns:", referrals: "Referrals:" }
+    : { mode: "Mode:", trust: "Trust:", approved: "Approved:", rejected: "Rejected:", disputes: "Disputes:", activeCampaigns: "Active campaigns:", referrals: "Referrals:" };
 
   return [
-    "👤 Profile",
+    messages.profile.title,
     nameLine,
-    `Mode: ${user?.mode ?? "N/A"}`,
-    `Trust: ${trust.label} ${trust.score}/100`,
+    `${labels.mode} ${user?.mode ?? "N/A"}`,
+    `${labels.trust} ${trust.label} ${trust.score}/100`,
     "",
-    "💰 Wallet",
-    `Available: ${wallet.available} BDT`,
-    `Withdrawable: ${wallet.withdrawable} BDT`,
+    messages.profile.wallet,
+    `${messages.wallet.available} ${wallet.available} BDT`,
+    `${messages.wallet.withdrawable} ${wallet.withdrawable} BDT`,
     "",
-    "📌 Activity",
-    `Approved: ${approved}`,
-    `Rejected: ${rejected}`,
-    `Disputes: ${disputes.length}`,
-    `Active campaigns: ${activeCampaigns}`,
-    `Referrals: ${referrals.length}`
+    messages.profile.activity,
+    `${labels.approved} ${approved}`,
+    `${labels.rejected} ${rejected}`,
+    `${labels.disputes} ${disputes.length}`,
+    `${labels.activeCampaigns} ${activeCampaigns}`,
+    `${labels.referrals} ${referrals.length}`
   ].join("\n");
 }
 
-function languageKeyboard() {
+function languageKeyboard(language?: "en" | "bn") {
+  const languageMessages = getMessages(language).language;
   return Markup.inlineKeyboard([
-    [Markup.button.callback("English", "language:en")],
-    [Markup.button.callback("Bangla", "language:bn")]
+    [Markup.button.callback(languageMessages.english, "language:en")],
+    [Markup.button.callback(languageMessages.bangla, "language:bn")]
   ]);
 }
 
 function formatLanguageStatus(language: "en" | "bn") {
-  const languageMessages = t.language;
-  const label = language === "bn" ? "Bangla" : "English";
+  const languageMessages = getMessages(language).language;
+  const label = language === "bn" ? languageMessages.bangla : languageMessages.english;
   return [
     languageMessages.title,
     `${languageMessages.current} ${label}`,
@@ -1571,15 +1567,16 @@ async function maybeApplyReferral(payload: string | undefined, userId: number, w
   return "Referral applied.";
 }
 
-function formatReferralStats(userId: number, botUsername?: string): string {
+function formatReferralStats(userId: number, botUsername?: string, language?: "en" | "bn"): string {
+  const messages = getMessages(language);
   const referrals = store.snapshot().referrals.filter((referral) => referral.referrerId === userId);
   const credited = referrals.filter((referral) => referral.status === "credited");
   const earned = credited.reduce((sum, referral) => sum + referral.bonusAmount, 0);
   const link = botUsername ? `https://t.me/${botUsername}?start=ref_${userId}` : `https://t.me/YOUR_BOT_USERNAME?start=ref_${userId}`;
 
   return [
-    "Neosence Referrals",
-    `Your ID: ${userId}`,
+    messages.menu.referrals,
+    `${messages.wallet.userId} ${userId}`,
     `Invites: ${referrals.length}`,
     `Credited: ${credited.length}`,
     `Referral earning: ${Math.round(earned * 100) / 100} BDT`,
@@ -2441,63 +2438,67 @@ function shortId(id: string): string {
   return id.length <= 12 ? id : id.slice(0, 12);
 }
 
-function campaignListKeyboard(tasks: Task[]) {
+function campaignListKeyboard(tasks: Task[], language?: "en" | "bn") {
+  const messages = getMessages(language);
   return Markup.inlineKeyboard([
     ...tasks.slice(0, 10).map((task) => [
       Markup.button.callback(`${task.title} (${task.status})`, `campaign:view:${task.id}`)
     ]),
     [Markup.button.callback("Campaign History", "menu:campaign_history")],
-    [Markup.button.callback("Home", "menu:home")]
+    [Markup.button.callback(messages.common.back, "menu:home")]
   ]);
 }
 
 function campaignEmptyKeyboard(user: { language: "en" | "bn" }) {
   const messages = getMessages(user.language);
   return Markup.inlineKeyboard([
-    [Markup.button.callback("Campaign History", "menu:campaign_history")],
+    [Markup.button.callback(user.language === "bn" ? "ক্যাম্পেইন হিস্ট্রি" : "Campaign History", "menu:campaign_history")],
     [Markup.button.callback(messages.common.back, "menu:home")]
   ]);
 }
 
-function campaignHistoryKeyboard() {
+function campaignHistoryKeyboard(language?: "en" | "bn") {
+  const messages = getMessages(language);
   return Markup.inlineKeyboard([
-    [Markup.button.callback("Back to Campaigns", "menu:campaigns")],
-    [Markup.button.callback("Home", "menu:home")]
+    [Markup.button.callback(language === "bn" ? "ক্যাম্পেইনে ফিরুন" : "Back to Campaigns", "menu:campaigns")],
+    [Markup.button.callback(messages.common.back, "menu:home")]
   ]);
 }
 
-function campaignActionKeyboard(taskId: string, status: TaskStatus) {
+function campaignActionKeyboard(taskId: string, status: TaskStatus, language?: "en" | "bn") {
+  const messages = getMessages(language);
   const rows = [];
   if (status === "active") {
-    rows.push([Markup.button.callback("Pause", `campaign:pause:${taskId}`)]);
+    rows.push([Markup.button.callback(language === "bn" ? "Pause করুন" : "Pause", `campaign:pause:${taskId}`)]);
   }
   if (status === "paused") {
-    rows.push([Markup.button.callback("Resume", `campaign:resume:${taskId}`)]);
+    rows.push([Markup.button.callback(language === "bn" ? "Resume করুন" : "Resume", `campaign:resume:${taskId}`)]);
   }
   if (status === "active" || status === "paused") {
-    rows.push([Markup.button.callback("Cancel + Refund Unused", `campaign:cancel:${taskId}`)]);
+    rows.push([Markup.button.callback(language === "bn" ? "বাতিল + Refund" : "Cancel + Refund Unused", `campaign:cancel:${taskId}`)]);
   }
-  rows.push([Markup.button.callback("Submissions", "menu:submissions")]);
-  rows.push([Markup.button.callback("Back to Campaigns", "menu:campaigns"), Markup.button.callback("Home", "menu:home")]);
+  rows.push([Markup.button.callback(messages.menu.submissions, "menu:submissions")]);
+  rows.push([Markup.button.callback(language === "bn" ? "ক্যাম্পেইনে ফিরুন" : "Back to Campaigns", "menu:campaigns"), Markup.button.callback(messages.common.back, "menu:home")]);
   return Markup.inlineKeyboard(rows);
 }
 
-function formatCampaignList(tasks: Task[]): string {
+function formatCampaignList(tasks: Task[], language?: "en" | "bn"): string {
   return [
-    "My Campaigns",
-    "Active and paused campaigns only",
+    getMessages(language).menu.campaigns,
+    language === "bn" ? "শুধু active এবং paused campaign" : "Active and paused campaigns only",
     "",
     ...tasks.slice(0, 10).map((task) => {
       const pending = store.snapshot().submissions.filter((submission) => submission.taskId === task.id && submission.status === "pending").length;
-      return `- ${task.title}: ${task.status}, ${task.completedCount}/${task.workerLimit}, pending ${pending}`;
+      return `- ${task.title}: ${task.status}, ${task.completedCount}/${task.workerLimit}, ${language === "bn" ? "pending" : "pending"} ${pending}`;
     })
   ].join("\n");
 }
 
-function formatCampaignHistory(tasks: Task[]): string {
+function formatCampaignHistory(tasks: Task[], language?: "en" | "bn"): string {
+  const messages = getMessages(language);
   return [
-    "Campaign History",
-    "Completed and cancelled campaigns",
+    language === "bn" ? "ক্যাম্পেইন হিস্ট্রি" : "Campaign History",
+    language === "bn" ? "Completed এবং cancelled campaign" : "Completed and cancelled campaigns",
     "",
     ...tasks.slice(0, 10).map((task) => {
       const refunded = store.snapshot().walletTransactions
@@ -2508,7 +2509,7 @@ function formatCampaignHistory(tasks: Task[]): string {
   ].join("\n");
 }
 
-function formatCampaignDetail(taskId: string): string {
+function formatCampaignDetail(taskId: string, language?: "en" | "bn"): string {
   const state = store.snapshot();
   const task = state.tasks.find((item) => item.id === taskId);
   if (!task) return "Campaign not found.";
@@ -2518,7 +2519,7 @@ function formatCampaignDetail(taskId: string): string {
   const rejected = submissions.filter((submission) => submission.status === "rejected").length;
 
   return [
-    formatTask(task),
+    formatTask(task, language),
     "",
     "Campaign stats:",
     `Pending proof: ${pending}`,

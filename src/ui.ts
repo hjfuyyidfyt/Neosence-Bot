@@ -45,21 +45,42 @@ export function taskActionButtons(task: Task, language?: LanguageCode) {
   return Markup.inlineKeyboard(buttons);
 }
 
-export function formatTask(task: Task): string {
+export function formatTask(task: Task, language?: LanguageCode): string {
+  const messages = getMessages(language);
+  const category = messages.categories[task.category as keyof typeof messages.categories] ?? task.category;
+  const labels = language === "bn"
+    ? {
+      category: "ক্যাটাগরি:",
+      reward: "রিওয়ার্ড:",
+      workers: "ওয়ার্কার:",
+      verification: "ভেরিফিকেশন:",
+      visitTimer: "ভিজিট টাইমার:",
+      instructions: "ইনস্ট্রাকশন:",
+      buyerApproval: "buyer/admin approval"
+    }
+    : {
+      category: "Category:",
+      reward: "Reward:",
+      workers: "Workers:",
+      verification: "Verification:",
+      visitTimer: "Visit timer:",
+      instructions: "Instructions:",
+      buyerApproval: "buyer/admin approval"
+    };
   const verify = task.approvalType === "auto"
-    ? `\nVerification: ${task.verificationType ?? "auto"}`
-    : "\nVerification: buyer/admin approval";
+    ? `\n${labels.verification} ${task.verificationType ?? "auto"}`
+    : `\n${labels.verification} ${labels.buyerApproval}`;
 
   return [
     `💼 ${task.title}`,
     "",
-    `Category: ${task.category}`,
-    `Reward: ${task.rewardPerWorker} BDT`,
-    `Workers: ${task.completedCount}/${task.workerLimit}`,
-    `Verification: ${task.approvalType}${verify}`,
-    task.websiteVisitSeconds ? `Visit timer: ${task.websiteVisitSeconds}s` : undefined,
+    `${labels.category} ${category}`,
+    `${labels.reward} ${task.rewardPerWorker} BDT`,
+    `${labels.workers} ${task.completedCount}/${task.workerLimit}`,
+    `${labels.verification} ${task.approvalType}${verify}`,
+    task.websiteVisitSeconds ? `${labels.visitTimer} ${task.websiteVisitSeconds}s` : undefined,
     "",
-    "Instructions:",
+    labels.instructions,
     task.instructions
   ].filter(Boolean).join("\n");
 }
