@@ -205,6 +205,7 @@ bot.command("posttask", async (ctx) => {
   });
   try {
     assertCampaignTargetAllowed(task);
+    assertEnoughWithdrawableForEscrow(user.id, escrowRequired(task), user.language);
   } catch (error) {
     await ctx.reply((error as Error).message);
     return;
@@ -606,6 +607,12 @@ bot.action("menu:wallet", async (ctx) => {
   await showScreen(ctx, formatWallet(user.id, user.mode, user.language), walletKeyboard(user));
 });
 
+bot.action("wallet:deposit_help", async (ctx) => {
+  await ctx.answerCbQuery();
+  const user = await ensureUser(ctx.from);
+  await showScreen(ctx, walletLabels(user.language).depositHelp, walletKeyboard(user));
+});
+
 bot.action("menu:mode", async (ctx) => {
   await ctx.answerCbQuery();
   const user = await ensureUser(ctx.from);
@@ -698,7 +705,7 @@ bot.action("withdraw:all", async (ctx) => {
   const user = await ensureUser(ctx.from);
   const wallet = walletSummary(store.snapshot(), user.id);
   if (wallet.withdrawable <= 0) {
-    await showScreen(ctx, "No withdrawable balance available right now.", walletKeyboard(user));
+    await showScreen(ctx, walletLabels(user.language).noWithdrawableBalance, walletKeyboard(user));
     return;
   }
   await beginWithdraw(ctx, user, wallet.withdrawable, "all");
@@ -949,6 +956,7 @@ bot.action("wizard:confirm", async (ctx) => {
   });
   try {
     assertCampaignTargetAllowed(task);
+    assertEnoughWithdrawableForEscrow(user.id, escrowRequired(task), user.language);
   } catch (error) {
     await ctx.reply((error as Error).message);
     return;
@@ -1361,7 +1369,9 @@ function homeKeyboard(user: { language: "en" | "bn" }) {
 function walletLabels(language?: "en" | "bn") {
   if (language === "bn") {
     return {
-      addBalance: "ব্যালেন্স যোগ",
+      deposit: "ডিপোজিট",
+      postTask: "টাস্ক পোস্ট",
+      campaigns: "ক্যাম্পেইন",
       withdrawAll: "সব উইথড্র",
       customAmount: "কাস্টম অ্যামাউন্ট",
       changePayout: "পেআউট পরিবর্তন",
@@ -1381,14 +1391,19 @@ function walletLabels(language?: "en" | "bn") {
       receive: "আপনি পাবেন",
       payoutSaved: "পেআউট সেভ হয়েছে",
       insufficientBalance: "উইথড্র করার মতো যথেষ্ট ব্যালেন্স নেই।",
+      noWithdrawableBalance: "এখন উইথড্র করার মতো কোনো ব্যালেন্স নেই।",
       amountTooLow: "পেআউট ফি কাটার পর অ্যামাউন্ট খুব কম।",
       withdrawSubmitted: "✅ উইথড্র রিকোয়েস্ট জমা হয়েছে",
-      noWithdrawals: "এখনও কোনো উইথড্র নেই।"
+      noWithdrawals: "এখনও কোনো উইথড্র নেই।",
+      depositHelp: "ডিপোজিট করতে /depositreq কমান্ড ব্যবহার করুন।\n\nফরম্যাট:\n/depositreq 500 bkash trxid-or-proof-note",
+      escrowInsufficient: "টাস্ক পাবলিশ করার মতো withdrawable balance নেই। Hold/Pending ব্যালেন্স ব্যবহার করা যাবে না।"
     };
   }
 
   return {
-    addBalance: "Add Balance",
+    deposit: "Deposit",
+    postTask: "Post Task",
+    campaigns: "Campaigns",
     withdrawAll: "Withdraw All",
     customAmount: "Custom Amount",
     changePayout: "Change Payout",
@@ -1408,9 +1423,12 @@ function walletLabels(language?: "en" | "bn") {
     receive: "You receive",
     payoutSaved: "Payout saved",
     insufficientBalance: "Insufficient withdrawable balance.",
+    noWithdrawableBalance: "No withdrawable balance available right now.",
     amountTooLow: "Amount is too low after payout fee.",
     withdrawSubmitted: "✅ Withdrawal request submitted",
-    noWithdrawals: "No withdrawals yet."
+    noWithdrawals: "No withdrawals yet.",
+    depositHelp: "Use /depositreq to request a deposit.\n\nFormat:\n/depositreq 500 bkash trxid-or-proof-note",
+    escrowInsufficient: "Not enough withdrawable balance to publish this task. Hold/pending balance cannot be used."
   };
 }
 
@@ -1419,7 +1437,8 @@ function walletKeyboard(user: { mode: "freelancer" | "buyer"; language: "en" | "
   const labels = walletLabels(user.language);
   if (user.mode === "buyer") {
     return Markup.inlineKeyboard([
-      [Markup.button.callback(labels.addBalance, "menu:wallet")],
+      [Markup.button.callback(labels.deposit, "wallet:deposit_help")],
+      [Markup.button.callback(labels.postTask, "menu:post"), Markup.button.callback(labels.campaigns, "menu:campaigns")],
       [Markup.button.callback(messages.common.back, "menu:home")]
     ]);
   }
@@ -1476,25 +1495,29 @@ function formatWallet(userId: number, mode: "freelancer" | "buyer", language?: "
     `${messages.wallet.available} ${formatMoney(wallet.available, language)}`,
     `${messages.wallet.withdrawable} ${formatMoney(wallet.withdrawable, language)}`,
     `${messages.wallet.pending} ${formatMoney(wallet.pending, language)}`,
-    `${messages.wallet.autoHold} ${formatMoney(hold, language)}`
+    `${messages.wallet.autoHold} ${formatMoney(hold, language)}`,
+    `${messages.wallet.escrowLocked} ${formatMoney(wallet.escrow, language)}`,
+    `${labels.payout}: ${payout}`
   ];
 
-  if (mode === "buyer") {
-    return [
-      messages.wallet.buyerTitle,
-      ...common,
-      `${messages.wallet.escrowLocked} ${formatMoney(wallet.escrow, language)}`,
-      "",
-      `${messages.wallet.deposit}: /depositreq 500 bkash trxid-or-proof-note`
-    ].join("\n");
-  }
-
   return [
-    messages.wallet.freelancerTitle,
-    ...common,
-    "",
-    `${labels.payout}: ${payout}`
+    mode === "buyer" ? messages.wallet.buyerTitle : messages.wallet.freelancerTitle,
+    ...common
   ].join("\n");
+}
+
+function assertEnoughWithdrawableForEscrow(userId: number, requiredEscrow: number, language?: "en" | "bn") {
+  const wallet = walletSummary(store.snapshot(), userId);
+  if (wallet.withdrawable >= requiredEscrow) return;
+
+  const labels = walletLabels(language);
+  const messages = getMessages(language);
+  throw new Error([
+    labels.escrowInsufficient,
+    "",
+    `${messages.wallet.withdrawable} ${formatMoney(wallet.withdrawable, language)}`,
+    `${messages.wallet.escrowLocked} ${formatMoneyDetail(requiredEscrow, language)}`
+  ].join("\n"));
 }
 
 function formatMode(mode: "freelancer" | "buyer", language?: "en" | "bn"): string {
@@ -1603,6 +1626,24 @@ function cancelWithdrawKeyboard(language?: "en" | "bn") {
 
 async function beginWithdraw(ctx: Context, user: { id: number; mode: "freelancer" | "buyer"; language: "en" | "bn"; payoutMethod?: { type: PayoutMethodType; account: string } }, amount: number, intent: WithdrawIntent) {
   const labels = walletLabels(user.language);
+  const wallet = walletSummary(store.snapshot(), user.id);
+  if (!Number.isFinite(amount) || amount <= 0 || wallet.withdrawable <= 0) {
+    const text = `${labels.noWithdrawableBalance}\n${getMessages(user.language).wallet.withdrawable} ${formatMoney(wallet.withdrawable, user.language)}`;
+    if (ctx.from) await showFlowScreen(ctx as Context & { from: TelegramFrom }, text, walletKeyboard(user));
+    else await showScreen(ctx, text, walletKeyboard(user));
+    return;
+  }
+  if (amount > wallet.withdrawable) {
+    const text = `${labels.insufficientBalance}\n${getMessages(user.language).wallet.withdrawable} ${formatMoney(wallet.withdrawable, user.language)}`;
+    if (ctx.from) await showFlowScreen(ctx as Context & { from: TelegramFrom }, text, walletKeyboard(user));
+    else await showScreen(ctx, text, walletKeyboard(user));
+    return;
+  }
+  if (user.payoutMethod && amount - calculateWithdrawFee(user.payoutMethod.type, amount) <= 0) {
+    if (ctx.from) await showFlowScreen(ctx as Context & { from: TelegramFrom }, labels.amountTooLow, walletKeyboard(user));
+    else await showScreen(ctx, labels.amountTooLow, walletKeyboard(user));
+    return;
+  }
   if (!user.payoutMethod) {
     if (ctx.from) await showFlowScreen(ctx as Context & { from: TelegramFrom }, labels.noPayoutSaved, payoutMethodKeyboard(intent, user.language, amount));
     else await showScreen(ctx, labels.noPayoutSaved, payoutMethodKeyboard(intent, user.language, amount));
@@ -1785,6 +1826,7 @@ function formatUserProfile(userId: number, language?: "en" | "bn"): string {
   const state = store.snapshot();
   const user = state.users.find((item) => item.id === userId);
   const wallet = walletSummary(state, userId);
+  const hold = Math.max(wallet.available - wallet.withdrawable, 0);
   const trust = calculateTrustScore(state, userId);
   const submissions = state.submissions.filter((submission) => submission.workerId === userId);
   const approved = submissions.filter((submission) => submission.status === "approved" || submission.status === "auto_approved").length;
@@ -1809,6 +1851,9 @@ function formatUserProfile(userId: number, language?: "en" | "bn"): string {
     messages.profile.wallet,
     `${messages.wallet.available} ${formatMoney(wallet.available, language)}`,
     `${messages.wallet.withdrawable} ${formatMoney(wallet.withdrawable, language)}`,
+    `${messages.wallet.pending} ${formatMoney(wallet.pending, language)}`,
+    `${messages.wallet.autoHold} ${formatMoney(hold, language)}`,
+    `${messages.wallet.escrowLocked} ${formatMoney(wallet.escrow, language)}`,
     "",
     messages.profile.activity,
     `${labels.approved} ${approved}`,

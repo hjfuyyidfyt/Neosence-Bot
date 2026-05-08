@@ -21,8 +21,8 @@ export const messages = {
       campaigns: "📊 Campaigns",
       submissions: "🧾 Submissions",
       balance: "💰 Balance",
-      freelancerMode: "🔄 Freelancer Mode",
-      buyerMode: "🔄 Buyer Mode",
+      freelancerMode: "🔄 Switch to Freelancer",
+      buyerMode: "🔄 Switch to Buyer",
       profile: "👤 Profile",
       support: "🛟 Support",
       earnMoney: "💼 Earn Money",
@@ -123,8 +123,8 @@ export const messages = {
       myJobsHelp: "📌 Use /mytasks to see your accepted jobs and submissions."
     },
     wallet: {
-      buyerTitle: "💰 Buyer Balance",
-      freelancerTitle: "💰 Freelancer Wallet",
+      buyerTitle: "💰 Wallet",
+      freelancerTitle: "💰 Wallet",
       userId: "User ID:",
       available: "Available:",
       pending: "Pending:",
@@ -190,8 +190,8 @@ const banglaMessages: MessageBundle = {
     campaigns: "📊 ক্যাম্পেইন",
     submissions: "🧾 সাবমিশন",
     balance: "💰 ব্যালেন্স",
-    freelancerMode: "🔄 ফ্রিল্যান্সার মোড",
-    buyerMode: "🔄 বায়ার মোড",
+    freelancerMode: "🔄 ফ্রিল্যান্সার মোডে যান",
+    buyerMode: "🔄 বায়ার মোডে যান",
     profile: "👤 প্রোফাইল",
     support: "🛟 সাপোর্ট",
     earnMoney: "💼 আয় করুন",
@@ -292,8 +292,8 @@ const banglaMessages: MessageBundle = {
     myJobsHelp: "📌 আপনার accepted jobs এবং submissions দেখতে /mytasks ব্যবহার করুন।"
   },
   wallet: {
-    buyerTitle: "💰 বায়ার ব্যালেন্স",
-    freelancerTitle: "💰 ফ্রিল্যান্সার ওয়ালেট",
+    buyerTitle: "💰 ওয়ালেট",
+    freelancerTitle: "💰 ওয়ালেট",
     userId: "ইউজার ID:",
     available: "এভেইলেবল:",
     pending: "পেন্ডিং:",
