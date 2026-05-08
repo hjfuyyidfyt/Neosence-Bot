@@ -49,6 +49,7 @@ const earnSkips = new Map<string, Set<string>>();
 type WithdrawIntent = "all" | "custom" | "change";
 const payoutSetupWaiters = new Map<number, { method: PayoutMethodType; intent: WithdrawIntent; amount?: number }>();
 const customWithdrawWaiters = new Set<number>();
+const activeScreenMessages = new Map<number, { chatId: number | string; messageId: number }>();
 type TaskDraftStep =
   | "task_type"
   | "title"
@@ -1296,6 +1297,7 @@ async function showScreen(ctx: Context, text: string, extra?: ReplyMarkup) {
   if (ctx.callbackQuery) {
     try {
       await ctx.editMessageText(text, extra as Parameters<Context["editMessageText"]>[1]);
+      rememberActiveScreen(ctx);
       return;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -1307,7 +1309,38 @@ async function showScreen(ctx: Context, text: string, extra?: ReplyMarkup) {
     }
   }
 
-  await ctx.reply(text, extra);
+  const sent = await ctx.reply(text, extra);
+  if (ctx.from && "message_id" in sent) {
+    activeScreenMessages.set(ctx.from.id, { chatId: sent.chat.id, messageId: sent.message_id });
+  }
+}
+
+function rememberActiveScreen(ctx: Context) {
+  const message = ctx.callbackQuery?.message;
+  if (!ctx.from || !message) return;
+  activeScreenMessages.set(ctx.from.id, { chatId: message.chat.id, messageId: message.message_id });
+}
+
+async function showFlowScreen(ctx: Context & { from: TelegramFrom }, text: string, extra?: ReplyMarkup) {
+  const active = activeScreenMessages.get(ctx.from.id);
+  if (active) {
+    try {
+      await ctx.telegram.editMessageText(active.chatId, active.messageId, undefined, text, extra as Parameters<typeof ctx.telegram.editMessageText>[4]);
+      return;
+    } catch (error) {
+      console.warn("Falling back to reply for flow screen", error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  await showScreen(ctx, text, extra);
+}
+
+async function deleteUserInputMessage(ctx: Context) {
+  try {
+    await ctx.deleteMessage();
+  } catch {
+    // Some chats do not allow deleting user messages; clean screen editing still works.
+  }
 }
 
 function homeText(user: { mode: "freelancer" | "buyer"; language: "en" | "bn" }) {
@@ -1510,10 +1543,12 @@ function cancelWithdrawKeyboard(language?: "en" | "bn") {
 
 async function beginWithdraw(ctx: Context, user: { id: number; mode: "freelancer" | "buyer"; language: "en" | "bn"; payoutMethod?: { type: PayoutMethodType; account: string } }, amount: number, intent: WithdrawIntent) {
   if (!user.payoutMethod) {
-    await showScreen(ctx, "No payout method saved. Choose once:", payoutMethodKeyboard(intent, user.language, amount));
+    if (ctx.from) await showFlowScreen(ctx as Context & { from: TelegramFrom }, "No payout method saved. Choose once:", payoutMethodKeyboard(intent, user.language, amount));
+    else await showScreen(ctx, "No payout method saved. Choose once:", payoutMethodKeyboard(intent, user.language, amount));
     return;
   }
-  await showScreen(ctx, formatWithdrawConfirm(user.payoutMethod.type, user.payoutMethod.account, amount), withdrawConfirmKeyboard(amount, user.language));
+  if (ctx.from) await showFlowScreen(ctx as Context & { from: TelegramFrom }, formatWithdrawConfirm(user.payoutMethod.type, user.payoutMethod.account, amount), withdrawConfirmKeyboard(amount, user.language));
+  else await showScreen(ctx, formatWithdrawConfirm(user.payoutMethod.type, user.payoutMethod.account, amount), withdrawConfirmKeyboard(amount, user.language));
 }
 
 function withdrawConfirmKeyboard(amount: number, language?: "en" | "bn") {
@@ -1533,8 +1568,9 @@ function payoutAccountPrompt(method: PayoutMethodType): string {
 async function handlePayoutAccountMessage(ctx: Context & { from: TelegramFrom; message: unknown }, setup: { method: PayoutMethodType; intent: WithdrawIntent; amount?: number }) {
   const account = extractText(ctx.message);
   const user = await ensureUser(ctx.from);
+  await deleteUserInputMessage(ctx);
   if (!account) {
-    await ctx.reply(payoutAccountPrompt(setup.method));
+    await showFlowScreen(ctx, payoutAccountPrompt(setup.method), cancelWithdrawKeyboard(user.language));
     return;
   }
 
@@ -1548,25 +1584,25 @@ async function handlePayoutAccountMessage(ctx: Context & { from: TelegramFrom; m
 
   if (setup.intent === "custom") {
     customWithdrawWaiters.add(user.id);
-    await ctx.reply(`Payout saved: ${formatSavedPayout(setup.method, account)}\n\n${formatCustomWithdrawPrompt(user.id)}`);
+    await showFlowScreen(ctx, `Payout saved: ${formatSavedPayout(setup.method, account)}\n\n${formatCustomWithdrawPrompt(user.id)}`, cancelWithdrawKeyboard(user.language));
     return;
   }
 
   if (setup.intent === "all" && setup.amount) {
-    await ctx.reply(`Payout saved: ${formatSavedPayout(setup.method, account)}`);
     await beginWithdraw(ctx, updatedUser, setup.amount, "all");
     return;
   }
 
-  await ctx.reply(`Payout saved: ${formatSavedPayout(setup.method, account)}`);
+  await showFlowScreen(ctx, `Payout saved: ${formatSavedPayout(setup.method, account)}`, walletKeyboard(updatedUser));
 }
 
 async function handleCustomWithdrawAmount(ctx: Context & { from: TelegramFrom; message: unknown }) {
   const user = await ensureUser(ctx.from);
   const text = extractText(ctx.message);
   const amount = Number(text);
+  await deleteUserInputMessage(ctx);
   if (!Number.isFinite(amount) || amount <= 0) {
-    await ctx.reply("Enter a valid amount. Example: 500");
+    await showFlowScreen(ctx, "Enter a valid amount. Example: 500", cancelWithdrawKeyboard(user.language));
     return;
   }
   customWithdrawWaiters.delete(user.id);
@@ -1599,18 +1635,23 @@ function formatWithdrawConfirm(method: PayoutMethodType, account: string, amount
 async function submitSavedWithdrawal(ctx: Context, userId: number, amount: number) {
   const state = store.snapshot();
   const user = state.users.find((item) => item.id === userId);
+  const userContext = ctx.from ? (ctx as Context & { from: TelegramFrom }) : undefined;
   if (!user?.payoutMethod) {
-    await ctx.reply("No payout method saved.");
+    if (userContext) await showFlowScreen(userContext, "No payout method saved.", undefined);
+    else await ctx.reply("No payout method saved.");
     return;
   }
   const wallet = walletSummary(state, userId);
   if (!Number.isFinite(amount) || amount <= 0 || wallet.withdrawable < amount) {
-    await ctx.reply(`Insufficient withdrawable balance. Current withdrawable: ${wallet.withdrawable} BDT`);
+    const text = `Insufficient withdrawable balance. Current withdrawable: ${wallet.withdrawable} BDT`;
+    if (userContext) await showFlowScreen(userContext, text, walletKeyboard(user));
+    else await ctx.reply(text);
     return;
   }
   const fee = calculateWithdrawFee(user.payoutMethod.type, amount);
   if (amount - fee <= 0) {
-    await ctx.reply("Amount is too low after payout fee.");
+    if (userContext) await showFlowScreen(userContext, "Amount is too low after payout fee.", walletKeyboard(user));
+    else await ctx.reply("Amount is too low after payout fee.");
     return;
   }
   const method = `${payoutMethodLabel(user.payoutMethod.type)}:${user.payoutMethod.account} | fee ${roundMoney(fee)} BDT | receive ${roundMoney(amount - fee)} BDT`;
@@ -1622,7 +1663,9 @@ async function submitSavedWithdrawal(ctx: Context, userId: number, amount: numbe
     amount,
     note: method
   }));
-  await ctx.reply(`✅ Withdrawal request submitted\n\nID: ${withdrawal.id}\nYou receive: ${roundMoney(amount - fee)} BDT`);
+  const text = `✅ Withdrawal request submitted\n\nID: ${withdrawal.id}\nYou receive: ${roundMoney(amount - fee)} BDT`;
+  if (userContext) await showFlowScreen(userContext, text, walletKeyboard(user));
+  else await ctx.reply(text);
 }
 
 function formatWithdrawalHistory(userId: number): string {
