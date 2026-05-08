@@ -26,7 +26,7 @@ import {
 import { formatTask, mainMenu, modeMenu, taskActionButtons } from "./ui.js";
 import { getMessages, t } from "./messages.js";
 import type { MessageBundle } from "./messages.js";
-import type { ApiVerificationPayload, DepositRequest, Dispute, Submission, Task, TaskApprovalType, TaskStatus, TrackedChat, VerificationType, Withdrawal } from "./types.js";
+import type { ApiVerificationPayload, DepositRequest, Dispute, PayoutMethodType, Submission, Task, TaskApprovalType, TaskStatus, TrackedChat, VerificationType, Withdrawal } from "./types.js";
 
 const store = createStore({ databaseUrl: config.databaseUrl, dataFile: config.dataFile });
 const telegramWebhookPath = "/telegram/webhook";
@@ -46,6 +46,9 @@ const quizWaiters = new Map<number, string>();
 const codeWaiters = new Map<number, string>();
 const supportWaiters = new Set<number>();
 const earnSkips = new Map<string, Set<string>>();
+type WithdrawIntent = "all" | "custom" | "change";
+const payoutSetupWaiters = new Map<number, { method: PayoutMethodType; intent: WithdrawIntent; amount?: number }>();
+const customWithdrawWaiters = new Set<number>();
 type TaskDraftStep =
   | "task_type"
   | "title"
@@ -149,6 +152,8 @@ bot.command("cancel", async (ctx) => {
   proofWaiters.delete(ctx.from.id);
   quizWaiters.delete(ctx.from.id);
   codeWaiters.delete(ctx.from.id);
+  payoutSetupWaiters.delete(ctx.from.id);
+  customWithdrawWaiters.delete(ctx.from.id);
   supportWaiters.delete(ctx.from.id);
   await ctx.reply(userMessages(ctx.from.id).common.currentInputCancelled);
 });
@@ -596,7 +601,7 @@ bot.action("menu:post", async (ctx) => {
 bot.action("menu:wallet", async (ctx) => {
   await ctx.answerCbQuery();
   const user = await ensureUser(ctx.from);
-  await showScreen(ctx, formatWallet(user.id, user.mode, user.language), homeKeyboard(user));
+  await showScreen(ctx, formatWallet(user.id, user.mode, user.language), walletKeyboard(user));
 });
 
 bot.action("menu:mode", async (ctx) => {
@@ -683,7 +688,66 @@ bot.action("menu:submissions", async (ctx) => {
 bot.action("menu:withdraw", async (ctx) => {
   await ctx.answerCbQuery();
   const user = await ensureUser(ctx.from);
-  await showScreen(ctx, formatWithdrawHelp(user.id, user.language), homeKeyboard(user));
+  await showScreen(ctx, formatWallet(user.id, user.mode, user.language), walletKeyboard(user));
+});
+
+bot.action("withdraw:all", async (ctx) => {
+  await ctx.answerCbQuery();
+  const user = await ensureUser(ctx.from);
+  const wallet = walletSummary(store.snapshot(), user.id);
+  if (wallet.withdrawable <= 0) {
+    await showScreen(ctx, "No withdrawable balance available right now.", walletKeyboard(user));
+    return;
+  }
+  await beginWithdraw(ctx, user, wallet.withdrawable, "all");
+});
+
+bot.action("withdraw:custom", async (ctx) => {
+  await ctx.answerCbQuery();
+  const user = await ensureUser(ctx.from);
+  if (!user.payoutMethod) {
+    await showScreen(ctx, "Save a payout method first. Choose one:", payoutMethodKeyboard("custom", user.language));
+    return;
+  }
+  customWithdrawWaiters.add(user.id);
+  await showScreen(ctx, formatCustomWithdrawPrompt(user.id), cancelWithdrawKeyboard(user.language));
+});
+
+bot.action("withdraw:change_payout", async (ctx) => {
+  await ctx.answerCbQuery();
+  const user = await ensureUser(ctx.from);
+  await showScreen(ctx, "Choose payout method:", payoutMethodKeyboard("change", user.language));
+});
+
+bot.action("withdraw:history", async (ctx) => {
+  await ctx.answerCbQuery();
+  const user = await ensureUser(ctx.from);
+  await showScreen(ctx, formatWithdrawalHistory(user.id), walletKeyboard(user));
+});
+
+bot.action(/^withdraw:method:(upi|trc20|binance_uid|bkash):(all|custom|change)(?::(.+))?$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const user = await ensureUser(ctx.from);
+  const method = ctx.match[1] as PayoutMethodType;
+  const intent = ctx.match[2] as WithdrawIntent;
+  const amount = ctx.match[3] ? Number(ctx.match[3]) : undefined;
+  payoutSetupWaiters.set(user.id, { method, intent, amount });
+  await showScreen(ctx, payoutAccountPrompt(method), cancelWithdrawKeyboard(user.language));
+});
+
+bot.action(/^withdraw:confirm:(.+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const user = await ensureUser(ctx.from);
+  const amount = Number(ctx.match[1]);
+  await submitSavedWithdrawal(ctx, user.id, amount);
+});
+
+bot.action("withdraw:cancel", async (ctx) => {
+  await ctx.answerCbQuery("Cancelled");
+  const user = await ensureUser(ctx.from);
+  payoutSetupWaiters.delete(user.id);
+  customWithdrawWaiters.delete(user.id);
+  await showScreen(ctx, formatWallet(user.id, user.mode, user.language), walletKeyboard(user));
 });
 
 bot.action("menu:referrals", async (ctx) => {
@@ -1159,6 +1223,17 @@ bot.action(/^verify:(.+)$/, async (ctx) => {
 
 bot.on("message", async (ctx, next) => {
   if (!ctx.from) return next();
+  const payoutSetup = payoutSetupWaiters.get(ctx.from.id);
+  if (payoutSetup) {
+    await handlePayoutAccountMessage(ctx, payoutSetup);
+    return;
+  }
+
+  if (customWithdrawWaiters.has(ctx.from.id)) {
+    await handleCustomWithdrawAmount(ctx);
+    return;
+  }
+
   const quizTaskId = quizWaiters.get(ctx.from.id);
   if (quizTaskId) {
     await handleQuizAnswer(ctx, quizTaskId);
@@ -1249,6 +1324,23 @@ function homeKeyboard(user: { language: "en" | "bn" }) {
   return Markup.inlineKeyboard([[Markup.button.callback(messages.common.back, "menu:home")]]);
 }
 
+function walletKeyboard(user: { mode: "freelancer" | "buyer"; language: "en" | "bn"; payoutMethod?: unknown }) {
+  const messages = getMessages(user.language);
+  if (user.mode === "buyer") {
+    return Markup.inlineKeyboard([
+      [Markup.button.callback("Add Balance", "menu:wallet")],
+      [Markup.button.callback(messages.common.back, "menu:home")]
+    ]);
+  }
+
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("Withdraw All", "withdraw:all"), Markup.button.callback("Custom Amount", "withdraw:custom")],
+    [Markup.button.callback(user.payoutMethod ? "Change Payout" : "Set Payout", "withdraw:change_payout")],
+    [Markup.button.callback("Withdrawal History", "withdraw:history")],
+    [Markup.button.callback(messages.common.back, "menu:home")]
+  ]);
+}
+
 async function showEarn(ctx: Context & { from: TelegramFrom }) {
   const userId = ctx.from.id;
   const user = store.snapshot().users.find((item) => item.id === userId);
@@ -1284,24 +1376,24 @@ async function showEarnCategory(ctx: Context & { from: TelegramFrom }, category:
 
 function formatWallet(userId: number, mode: "freelancer" | "buyer", language?: "en" | "bn"): string {
   const messages = getMessages(language);
+  const user = store.snapshot().users.find((item) => item.id === userId);
   const wallet = walletSummary(store.snapshot(), userId);
+  const hold = Math.max(wallet.available - wallet.withdrawable, 0);
+  const payout = user?.payoutMethod ? formatSavedPayout(user.payoutMethod.type, user.payoutMethod.account) : "Not set";
   const common = [
-    `${messages.wallet.userId} ${userId}`,
     `${messages.wallet.available} ${wallet.available} BDT`,
-    `${messages.wallet.pending} ${wallet.pending} BDT`,
     `${messages.wallet.withdrawable} ${wallet.withdrawable} BDT`,
-    `${messages.wallet.escrowLocked} ${wallet.escrow} BDT`,
-    `${messages.wallet.autoHold} ${Math.max(wallet.available - wallet.withdrawable, 0)} BDT`
+    `${messages.wallet.pending} ${wallet.pending} BDT`,
+    `Hold: ${hold} BDT`
   ];
 
   if (mode === "buyer") {
     return [
       messages.wallet.buyerTitle,
       ...common,
+      `${messages.wallet.escrowLocked} ${wallet.escrow} BDT`,
       "",
-      messages.wallet.deposit,
-      messages.wallet.depositHelp,
-      "/depositreq 500 bkash trxid-or-proof-note"
+      `${messages.wallet.deposit}: /depositreq 500 bkash trxid-or-proof-note`
     ].join("\n");
   }
 
@@ -1309,8 +1401,7 @@ function formatWallet(userId: number, mode: "freelancer" | "buyer", language?: "
     messages.wallet.freelancerTitle,
     ...common,
     "",
-    messages.wallet.withdraw,
-    "/withdraw 100 bkash:01XXXXXXXXX"
+    `Payout: ${payout}`
   ].join("\n");
 }
 
@@ -1402,6 +1493,180 @@ function formatWithdrawHelp(userId: number, language?: "en" | "bn"): string {
     messages.wallet.format,
     "/withdraw 100 bkash:01XXXXXXXXX"
   ].join("\n");
+}
+
+function payoutMethodKeyboard(intent: WithdrawIntent, language?: "en" | "bn", amount?: number) {
+  const amountSuffix = amount ? `:${amount}` : "";
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("UPI (2.9%)", `withdraw:method:upi:${intent}${amountSuffix}`), Markup.button.callback("TRC20 ($1.5)", `withdraw:method:trc20:${intent}${amountSuffix}`)],
+    [Markup.button.callback("Binance UID (0 fee)", `withdraw:method:binance_uid:${intent}${amountSuffix}`), Markup.button.callback("bKash (1%)", `withdraw:method:bkash:${intent}${amountSuffix}`)],
+    [Markup.button.callback(getMessages(language).common.cancel, "withdraw:cancel")]
+  ]);
+}
+
+function cancelWithdrawKeyboard(language?: "en" | "bn") {
+  return Markup.inlineKeyboard([[Markup.button.callback(getMessages(language).common.cancel, "withdraw:cancel")]]);
+}
+
+async function beginWithdraw(ctx: Context, user: { id: number; mode: "freelancer" | "buyer"; language: "en" | "bn"; payoutMethod?: { type: PayoutMethodType; account: string } }, amount: number, intent: WithdrawIntent) {
+  if (!user.payoutMethod) {
+    await showScreen(ctx, "No payout method saved. Choose once:", payoutMethodKeyboard(intent, user.language, amount));
+    return;
+  }
+  await showScreen(ctx, formatWithdrawConfirm(user.payoutMethod.type, user.payoutMethod.account, amount), withdrawConfirmKeyboard(amount, user.language));
+}
+
+function withdrawConfirmKeyboard(amount: number, language?: "en" | "bn") {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("Confirm Withdraw", `withdraw:confirm:${amount}`)],
+    [Markup.button.callback(getMessages(language).common.cancel, "withdraw:cancel")]
+  ]);
+}
+
+function payoutAccountPrompt(method: PayoutMethodType): string {
+  if (method === "upi") return "Send your UPI ID.";
+  if (method === "trc20") return "Send your TRC20 USDT wallet address.";
+  if (method === "binance_uid") return "Send your Binance UID.";
+  return "Send your bKash number.";
+}
+
+async function handlePayoutAccountMessage(ctx: Context & { from: TelegramFrom; message: unknown }, setup: { method: PayoutMethodType; intent: WithdrawIntent; amount?: number }) {
+  const account = extractText(ctx.message);
+  const user = await ensureUser(ctx.from);
+  if (!account) {
+    await ctx.reply(payoutAccountPrompt(setup.method));
+    return;
+  }
+
+  const updatedUser = {
+    ...user,
+    payoutMethod: { type: setup.method, account: account.slice(0, 160), updatedAt: new Date().toISOString() },
+    updatedAt: new Date().toISOString()
+  };
+  await store.upsertUser(updatedUser);
+  payoutSetupWaiters.delete(user.id);
+
+  if (setup.intent === "custom") {
+    customWithdrawWaiters.add(user.id);
+    await ctx.reply(`Payout saved: ${formatSavedPayout(setup.method, account)}\n\n${formatCustomWithdrawPrompt(user.id)}`);
+    return;
+  }
+
+  if (setup.intent === "all" && setup.amount) {
+    await ctx.reply(`Payout saved: ${formatSavedPayout(setup.method, account)}`);
+    await beginWithdraw(ctx, updatedUser, setup.amount, "all");
+    return;
+  }
+
+  await ctx.reply(`Payout saved: ${formatSavedPayout(setup.method, account)}`);
+}
+
+async function handleCustomWithdrawAmount(ctx: Context & { from: TelegramFrom; message: unknown }) {
+  const user = await ensureUser(ctx.from);
+  const text = extractText(ctx.message);
+  const amount = Number(text);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    await ctx.reply("Enter a valid amount. Example: 500");
+    return;
+  }
+  customWithdrawWaiters.delete(user.id);
+  await beginWithdraw(ctx, user, amount, "custom");
+}
+
+function formatCustomWithdrawPrompt(userId: number): string {
+  const wallet = walletSummary(store.snapshot(), userId);
+  return [
+    "Custom Withdraw",
+    `Withdrawable: ${wallet.withdrawable} BDT`,
+    "",
+    "Send amount. Example: 500"
+  ].join("\n");
+}
+
+function formatWithdrawConfirm(method: PayoutMethodType, account: string, amount: number): string {
+  const fee = calculateWithdrawFee(method, amount);
+  const receive = Math.max(amount - fee, 0);
+  return [
+    "Withdraw Request",
+    `Amount: ${roundMoney(amount)} BDT`,
+    `Method: ${payoutMethodLabel(method)}`,
+    `Payout: ${maskPayoutAccount(account)}`,
+    `Fee: ${roundMoney(fee)} BDT`,
+    `You receive: ${roundMoney(receive)} BDT`
+  ].join("\n");
+}
+
+async function submitSavedWithdrawal(ctx: Context, userId: number, amount: number) {
+  const state = store.snapshot();
+  const user = state.users.find((item) => item.id === userId);
+  if (!user?.payoutMethod) {
+    await ctx.reply("No payout method saved.");
+    return;
+  }
+  const wallet = walletSummary(state, userId);
+  if (!Number.isFinite(amount) || amount <= 0 || wallet.withdrawable < amount) {
+    await ctx.reply(`Insufficient withdrawable balance. Current withdrawable: ${wallet.withdrawable} BDT`);
+    return;
+  }
+  const fee = calculateWithdrawFee(user.payoutMethod.type, amount);
+  if (amount - fee <= 0) {
+    await ctx.reply("Amount is too low after payout fee.");
+    return;
+  }
+  const method = `${payoutMethodLabel(user.payoutMethod.type)}:${user.payoutMethod.account} | fee ${roundMoney(fee)} BDT | receive ${roundMoney(amount - fee)} BDT`;
+  const withdrawal = createWithdrawal(userId, amount, method);
+  await store.addWithdrawal(withdrawal);
+  await store.addTransaction(createTransaction({
+    userId,
+    type: "withdraw_request",
+    amount,
+    note: method
+  }));
+  await ctx.reply(`✅ Withdrawal request submitted\n\nID: ${withdrawal.id}\nYou receive: ${roundMoney(amount - fee)} BDT`);
+}
+
+function formatWithdrawalHistory(userId: number): string {
+  const withdrawals = store.snapshot().withdrawals.filter((item) => item.userId === userId);
+  if (withdrawals.length === 0) return "No withdrawals yet.";
+  return [
+    "Withdrawal History",
+    "",
+    ...withdrawals.slice(-8).reverse().map((item) => `- ${item.id}: ${item.amount} BDT, ${item.status}`)
+  ].join("\n");
+}
+
+function calculateWithdrawFee(method: PayoutMethodType, amount: number): number {
+  if (method === "upi") return amount * 0.029;
+  if (method === "bkash") return amount * 0.01;
+  if (method === "trc20") return 1.5 * config.usdToBdt;
+  return 0;
+}
+
+function payoutMethodLabel(method: PayoutMethodType): string {
+  if (method === "upi") return "UPI";
+  if (method === "trc20") return "TRC20";
+  if (method === "binance_uid") return "Binance UID";
+  return "bKash";
+}
+
+function formatSavedPayout(method: PayoutMethodType, account: string): string {
+  return `${payoutMethodLabel(method)} ${maskPayoutAccount(account)} (${payoutFeeLabel(method)})`;
+}
+
+function payoutFeeLabel(method: PayoutMethodType): string {
+  if (method === "upi") return "2.9% fee";
+  if (method === "trc20") return "$1.5 fee";
+  if (method === "bkash") return "1% fee";
+  return "0 fee";
+}
+
+function maskPayoutAccount(account: string): string {
+  if (account.length <= 6) return account;
+  return `${account.slice(0, 3)}••••${account.slice(-4)}`;
+}
+
+function roundMoney(value: number): number {
+  return Math.round(value * 100) / 100;
 }
 
 function formatUserProfile(userId: number, language?: "en" | "bn"): string {
@@ -1513,6 +1778,8 @@ async function setUserBanStatus(userId: number, isBanned: boolean) {
   proofWaiters.delete(userId);
   quizWaiters.delete(userId);
   codeWaiters.delete(userId);
+  payoutSetupWaiters.delete(userId);
+  customWithdrawWaiters.delete(userId);
   supportWaiters.delete(userId);
   return updatedUser;
 }

@@ -1,5 +1,13 @@
 export type UserMode = "freelancer" | "buyer";
 
+export type PayoutMethodType = "upi" | "trc20" | "binance_uid" | "bkash";
+
+export interface PayoutMethod {
+  type: PayoutMethodType;
+  account: string;
+  updatedAt: string;
+}
+
 export type TaskApprovalType = "manual" | "auto";
 
 export type VerificationType =
@@ -33,6 +41,7 @@ export interface UserProfile {
   firstName?: string;
   language: "en" | "bn";
   mode: UserMode;
+  payoutMethod?: PayoutMethod;
   isBanned: boolean;
   trustLevel: "new" | "verified" | "trusted" | "pro";
   createdAt: string;
