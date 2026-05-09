@@ -72,20 +72,29 @@ export function formatTask(task: Task, language?: LanguageCode, options: TaskFor
       join: "Join"
     };
   const target = formatTaskTarget(task, language, options);
+  const lines = [`💼 ${bold(task.title)}`];
 
-  return [
-    `💼 ${bold(task.title)}`,
-    "",
-    `${categoryIcon(task.category)} ${bold(category)}`,
+  if (target) {
+    lines.push(target, "");
+  } else {
+    lines.push("", `${categoryIcon(task.category)} ${bold(category)}`);
+  }
+
+  lines.push(
     `💵 ${bold(`${labels.reward}:`)} ${formatMoney(task.rewardPerWorker, language)}`,
     `👥 ${bold(`${labels.workers}:`)} ${task.completedCount}/${task.workerLimit}`,
-    `✅ ${bold(`${labels.verify}:`)} ${escapeHtml(verificationLabel(task, language))}`,
-    task.websiteVisitSeconds ? `⏱ ${bold(`${labels.visitTimer}:`)} ${task.websiteVisitSeconds}s` : undefined,
-    target,
+    `✅ ${bold(`${labels.verify}:`)} ${escapeHtml(verificationLabel(task, language))}`
+  );
+  if (task.websiteVisitSeconds) {
+    lines.push(`⏱ ${bold(`${labels.visitTimer}:`)} ${task.websiteVisitSeconds}s`);
+  }
+  lines.push(
     "",
     `📌 ${bold(labels.instructions)}`,
     escapeHtml(task.instructions)
-  ].filter((line): line is string => line !== undefined).join("\n");
+  );
+
+  return lines.join("\n");
 }
 
 export function taskHtmlExtra<T extends object | undefined>(extra?: T) {
