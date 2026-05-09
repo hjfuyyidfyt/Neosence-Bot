@@ -75,7 +75,7 @@ export function formatTask(task: Task, language?: LanguageCode): string {
     "",
     `📌 ${labels.instructions}`,
     task.instructions
-  ].filter(Boolean).join("\n");
+  ].filter((line): line is string => line !== undefined).join("\n");
 }
 
 function categoryIcon(category: string): string {
