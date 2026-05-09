@@ -207,6 +207,27 @@ export interface AdminPanelMessage {
   updatedAt: string;
 }
 
+export type AdminRole = "owner" | "manager" | "finance" | "reviewer" | "support";
+
+export interface AdminMember {
+  userId: number;
+  role: AdminRole;
+  active: boolean;
+  addedBy: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AdminAuditEvent {
+  id: string;
+  adminId: number;
+  action: string;
+  targetType?: string;
+  targetId?: string;
+  note?: string;
+  createdAt: string;
+}
+
 export interface StoreState {
   users: UserProfile[];
   tasks: Task[];
@@ -222,6 +243,8 @@ export interface StoreState {
   telegramInviteLinks: TelegramInviteLinkRecord[];
   telegramMemberships: TelegramMembershipRecord[];
   adminPanelMessages: AdminPanelMessage[];
+  adminMembers: AdminMember[];
+  adminAuditEvents: AdminAuditEvent[];
 }
 
 export interface ApiVerificationPayload {
