@@ -84,6 +84,11 @@ const taskDrafts = new Map<number, TaskDraft>();
 const DRAFT_TTL_MS = 60 * 60 * 1000;
 const VERIFY_COOLDOWN_MS = 15 * 1000;
 const verifyCooldowns = new Map<string, number>();
+const ACTIVE_TASK_CATEGORIES = new Set(["telegram", "website"]);
+const MIN_REWARD_USD: Record<string, number> = {
+  telegram: 0.01,
+  website: 0.034
+};
 const botRuntime = {
   launchState: "starting" as "starting" | "running" | "stopped" | "failed",
   lastError: undefined as string | undefined
@@ -183,11 +188,18 @@ bot.command("posttask", async (ctx) => {
 
   const [title, category, approvalRaw, rewardRaw, workersRaw, instructions, verificationRaw, target] = parts;
   const approvalType = approvalRaw as TaskApprovalType;
-  const rewardPerWorker = Number(rewardRaw);
+  const rewardPerWorker = parseRewardInput(rewardRaw, user.language);
   const workerLimit = Number(workersRaw);
 
   if (!["manual", "auto"].includes(approvalType) || !Number.isFinite(rewardPerWorker) || !Number.isInteger(workerLimit)) {
     await ctx.reply(messages.taskWizard.invalidCommandFields);
+    return;
+  }
+  try {
+    assertActiveTaskCategory(category, user.language);
+    assertMinimumReward(category, rewardPerWorker, user.language);
+  } catch (error) {
+    await ctx.reply((error as Error).message);
     return;
   }
 
@@ -831,7 +843,7 @@ bot.action(/^wizard:approval:(manual|auto)$/, async (ctx) => {
   draft.approvalType = ctx.match[1] as TaskApprovalType;
   draft.step = "reward";
   taskDrafts.set(ctx.from.id, draft);
-  await showScreen(ctx, messages.taskWizard.enterReward);
+  await showScreen(ctx, rewardPrompt(draft.category, store.snapshot().users.find((item) => item.id === ctx.from.id)?.language, messages));
 });
 
 bot.action(/^wizard:type:(telegram_join|website_visit|quiz|manual_proof|app_task|custom)$/, async (ctx) => {
@@ -854,6 +866,13 @@ bot.action(/^wizard:type:(telegram_join|website_visit|quiz|manual_proof|app_task
   await showScreen(ctx, messages.taskWizard.enterTitle);
 });
 
+bot.action(/^wizard:coming_soon:(app|social|survey|data_entry|review|quiz|custom)$/, async (ctx) => {
+  const user = await ensureUser(ctx.from);
+  const label = categoryLabel(ctx.match[1], user.language);
+  await ctx.answerCbQuery(user.language === "bn" ? `${label} শিগগির আসছে` : `${label} is coming soon`);
+  await showScreen(ctx, user.language === "bn" ? `${label} ক্যাটাগরি শিগগির আসছে।` : `${label} category is coming soon.`, taskCategoryKeyboard(getMessages(user.language)));
+});
+
 bot.action(/^wizard:category:(telegram|website|app|social|survey|data_entry|review|quiz|custom)$/, async (ctx) => {
   await ctx.answerCbQuery();
   const messages = userMessages(ctx.from.id);
@@ -864,11 +883,41 @@ bot.action(/^wizard:category:(telegram|website|app|social|survey|data_entry|revi
   }
 
   draft.category = ctx.match[1];
-  draft.title = defaultTitleForCategory(draft.category);
-  draft.instructions = defaultInstructionForCategory(draft.category);
-  draft.step = "task_type";
+  if (!ACTIVE_TASK_CATEGORIES.has(draft.category)) {
+    const label = categoryLabel(draft.category, store.snapshot().users.find((item) => item.id === ctx.from.id)?.language);
+    await showScreen(ctx, `${label} category is coming soon.`, taskCategoryKeyboard(messages));
+    return;
+  }
+
+  applyCategoryTemplate(draft, draft.category);
   taskDrafts.set(ctx.from.id, draft);
-  await showScreen(ctx, messages.taskWizard.chooseVerification, verificationMethodKeyboard(draft.category, messages));
+  if (draft.category === "website") {
+    await showScreen(ctx, messages.taskWizard.websiteTimerPrompt, websiteTimerKeyboard(messages));
+    return;
+  }
+  await showScreen(ctx, verificationTargetPrompt(draft.verificationType!, messages));
+});
+
+bot.action(/^wizard:website_timer:(30|60|120|custom)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const messages = userMessages(ctx.from.id);
+  const draft = getTaskDraft(ctx.from.id);
+  if (!draft || draft.category !== "website") {
+    await ctx.reply(messages.common.draftExpired);
+    return;
+  }
+
+  if (ctx.match[1] === "custom") {
+    draft.step = "website_timer";
+    taskDrafts.set(ctx.from.id, draft);
+    await showScreen(ctx, messages.taskWizard.websiteTimerPrompt);
+    return;
+  }
+
+  draft.websiteVisitSeconds = Number(ctx.match[1]);
+  draft.step = "target";
+  taskDrafts.set(ctx.from.id, draft);
+  await showScreen(ctx, verificationTargetPrompt("website_visit", messages));
 });
 
 bot.action(/^wizard:method:(auto_join|timer_visit|quiz_answer|manual_proof|webhook|app_tracking|in_app_code)$/, async (ctx) => {
@@ -901,7 +950,7 @@ bot.action("wizard:instruction:skip", async (ctx) => {
   }
   draft.step = "confirm";
   taskDrafts.set(ctx.from.id, draft);
-  await showScreen(ctx, formatDraftReview(draft, messages), confirmTaskKeyboard(messages));
+  await showScreen(ctx, formatDraftReview(draft, messages, store.snapshot().users.find((item) => item.id === ctx.from.id)?.language), confirmTaskKeyboard(messages));
 });
 
 bot.action("wizard:instruction:edit", async (ctx) => {
@@ -2063,14 +2112,86 @@ async function closeSupportTicket(ticketId: string) {
 async function startTaskWizard(ctx: Context & { from: TelegramFrom }) {
   const messages = userMessages(ctx.from.id);
   setTaskDraft(ctx.from.id, { step: "task_type" });
-  await showScreen(ctx, messages.taskWizard.chooseCategory, Markup.inlineKeyboard([
+  await showScreen(ctx, messages.taskWizard.chooseCategory, taskCategoryKeyboard(messages));
+}
+
+function taskCategoryKeyboard(messages: MessageBundle = t) {
+  return Markup.inlineKeyboard([
     [Markup.button.callback(`📢 ${messages.categories.telegram}`, "wizard:category:telegram"), Markup.button.callback(`🌐 ${messages.categories.website}`, "wizard:category:website")],
-    [Markup.button.callback(`📱 ${messages.categories.app}`, "wizard:category:app"), Markup.button.callback(`📣 ${messages.categories.social}`, "wizard:category:social")],
-    [Markup.button.callback(`📝 ${messages.categories.survey}`, "wizard:category:survey"), Markup.button.callback(`⌨️ ${messages.categories.data_entry}`, "wizard:category:data_entry")],
-    [Markup.button.callback(`⭐ ${messages.categories.review}`, "wizard:category:review"), Markup.button.callback(`✅ ${messages.categories.quiz}`, "wizard:category:quiz")],
-    [Markup.button.callback(`⚙️ ${messages.categories.custom}`, "wizard:category:custom")],
+    [Markup.button.callback(`📱 ${messages.categories.app} (Soon)`, "wizard:coming_soon:app"), Markup.button.callback(`📣 ${messages.categories.social} (Soon)`, "wizard:coming_soon:social")],
+    [Markup.button.callback(`📝 ${messages.categories.survey} (Soon)`, "wizard:coming_soon:survey"), Markup.button.callback(`⌨️ ${messages.categories.data_entry} (Soon)`, "wizard:coming_soon:data_entry")],
+    [Markup.button.callback(`⭐ ${messages.categories.review} (Soon)`, "wizard:coming_soon:review"), Markup.button.callback(`✅ ${messages.categories.quiz} (Soon)`, "wizard:coming_soon:quiz")],
+    [Markup.button.callback(`⚙️ ${messages.categories.custom} (Soon)`, "wizard:coming_soon:custom")],
     [Markup.button.callback(messages.common.cancel, "wizard:cancel")]
-  ]));
+  ]);
+}
+
+function websiteTimerKeyboard(messages: MessageBundle = t) {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("30s", "wizard:website_timer:30"), Markup.button.callback("60s", "wizard:website_timer:60"), Markup.button.callback("120s", "wizard:website_timer:120")],
+    [Markup.button.callback("Custom", "wizard:website_timer:custom")],
+    [Markup.button.callback(messages.common.cancel, "wizard:cancel")]
+  ]);
+}
+
+function applyCategoryTemplate(draft: TaskDraft, category: string) {
+  if (category === "telegram") {
+    draft.title = "Join Telegram channel/group";
+    draft.category = "telegram";
+    draft.approvalType = "auto";
+    draft.verificationType = "telegram_join";
+    draft.instructions = "Join the target Telegram channel/group, then verify membership in Neosence.";
+    draft.step = "target";
+    return;
+  }
+
+  draft.title = "Visit website";
+  draft.category = "website";
+  draft.approvalType = "auto";
+  draft.verificationType = "website_visit";
+  draft.instructions = "Open the website and stay until the timer ends.";
+  draft.step = "target";
+}
+
+function parseRewardInput(value: string, language?: "en" | "bn"): number {
+  const normalized = value.replace("$", "").trim();
+  const amount = Number(normalized);
+  if (!Number.isFinite(amount)) return Number.NaN;
+  return language === "en" ? roundMoney(amount * config.usdToBdt) : amount;
+}
+
+function minimumRewardBdt(category?: string): number {
+  const minUsd = MIN_REWARD_USD[category ?? ""] ?? MIN_REWARD_USD.website;
+  return roundMoney(minUsd * config.usdToBdt);
+}
+
+function rewardPrompt(category: string | undefined, language: "en" | "bn" | undefined, messages: MessageBundle = t): string {
+  const categoryKey = category ?? "website";
+  if (language === "en") {
+    const minimum = MIN_REWARD_USD[categoryKey] ?? MIN_REWARD_USD.website;
+    return `💰 Reward per worker in USD.\n\nMinimum: $${minimum}\nExample: ${minimum === MIN_REWARD_USD.telegram ? "0.02" : "0.05"}`;
+  }
+  return [
+    messages.taskWizard.enterReward,
+    "",
+    `Minimum: ${formatMoney(minimumRewardBdt(categoryKey), language)}`
+  ].join("\n");
+}
+
+function assertActiveTaskCategory(category: string, language?: "en" | "bn") {
+  if (ACTIVE_TASK_CATEGORIES.has(category)) return;
+  const label = categoryLabel(category, language);
+  throw new Error(language === "bn" ? `${label} ক্যাটাগরি শিগগির আসছে।` : `${label} category is coming soon.`);
+}
+
+function assertMinimumReward(category: string | undefined, rewardBdt: number, language?: "en" | "bn") {
+  const minimum = minimumRewardBdt(category);
+  if (rewardBdt >= minimum) return;
+  const categoryKey = category ?? "website";
+  const minUsd = MIN_REWARD_USD[categoryKey] ?? MIN_REWARD_USD.website;
+  throw new Error(language === "en"
+    ? `Minimum reward is $${minUsd}.`
+    : `মিনিমাম রিওয়ার্ড ${formatMoney(minimum, language)}।`);
 }
 
 function applyTaskTypeTemplate(draft: TaskDraft, type: string) {
@@ -2311,9 +2432,17 @@ async function handleTaskWizardMessage(ctx: Context & { from: TelegramFrom; mess
   }
 
   if (draft.step === "reward") {
-    const reward = Number(text);
+    const user = store.snapshot().users.find((item) => item.id === ctx.from.id);
+    const language = user?.language;
+    const reward = parseRewardInput(text, language);
     if (!Number.isFinite(reward) || reward <= 0) {
       await ctx.reply(messages.taskWizard.invalidReward);
+      return;
+    }
+    try {
+      assertMinimumReward(draft.category, reward, language);
+    } catch (error) {
+      await ctx.reply((error as Error).message);
       return;
     }
     draft.rewardPerWorker = reward;
@@ -2375,7 +2504,7 @@ async function handleTaskWizardMessage(ctx: Context & { from: TelegramFrom; mess
     if (!draft.rewardPerWorker) {
       draft.step = "reward";
       taskDrafts.set(ctx.from.id, draft);
-      await ctx.reply(messages.taskWizard.enterReward);
+      await ctx.reply(rewardPrompt(draft.category, store.snapshot().users.find((item) => item.id === ctx.from.id)?.language, messages));
       return;
     }
 
@@ -2388,7 +2517,7 @@ async function handleTaskWizardMessage(ctx: Context & { from: TelegramFrom; mess
 
     draft.step = "confirm";
     taskDrafts.set(ctx.from.id, draft);
-    await ctx.reply(formatDraftReview(draft, messages), confirmTaskKeyboard(messages));
+    await ctx.reply(formatDraftReview(draft, messages, store.snapshot().users.find((item) => item.id === ctx.from.id)?.language), confirmTaskKeyboard(messages));
     return;
   }
 
@@ -2415,10 +2544,10 @@ async function handleTaskWizardMessage(ctx: Context & { from: TelegramFrom; mess
       draft.verificationTarget = text.slice(0, 300);
     }
 
-    if (draft.verificationType === "website_visit") {
+    if (draft.verificationType === "website_visit" && !draft.websiteVisitSeconds) {
       draft.step = "website_timer";
       taskDrafts.set(ctx.from.id, draft);
-      await ctx.reply(messages.taskWizard.websiteTimerPrompt);
+      await ctx.reply(messages.taskWizard.websiteTimerPrompt, websiteTimerKeyboard(messages));
       return;
     }
 
@@ -2449,10 +2578,11 @@ function confirmTaskKeyboard(messages: MessageBundle = t) {
 
 async function promptNextCommercialStep(ctx: Context & { from: TelegramFrom }, draft: TaskDraft) {
   const messages = userMessages(ctx.from.id);
+  const user = store.snapshot().users.find((item) => item.id === ctx.from.id);
   if (!draft.rewardPerWorker) {
     draft.step = "reward";
     taskDrafts.set(ctx.from.id, draft);
-    await ctx.reply(messages.taskWizard.enterReward);
+    await ctx.reply(rewardPrompt(draft.category, user?.language, messages));
     return;
   }
 
@@ -2465,10 +2595,10 @@ async function promptNextCommercialStep(ctx: Context & { from: TelegramFrom }, d
 
   draft.step = "confirm";
   taskDrafts.set(ctx.from.id, draft);
-  await ctx.reply(formatDraftReview(draft, messages), confirmTaskKeyboard(messages));
+  await ctx.reply(formatDraftReview(draft, messages, store.snapshot().users.find((item) => item.id === ctx.from.id)?.language), confirmTaskKeyboard(messages));
 }
 
-function formatDraftReview(draft: TaskDraft, messages: MessageBundle = t): string {
+function formatDraftReview(draft: TaskDraft, messages: MessageBundle = t, language?: "en" | "bn"): string {
   const rewardTotal = (draft.rewardPerWorker ?? 0) * (draft.workerLimit ?? 0);
   const fee = rewardTotal * (config.platformFeePercent / 100);
   return [
@@ -2477,9 +2607,9 @@ function formatDraftReview(draft: TaskDraft, messages: MessageBundle = t): strin
     `Title: ${draft.title}`,
     `Category: ${draft.category}`,
     `Approval: ${draft.approvalType}`,
-    `Reward: ${draft.rewardPerWorker} BDT`,
+    `Reward: ${formatMoney(draft.rewardPerWorker ?? 0, language)}`,
     `Workers: ${draft.workerLimit}`,
-    `Total escrow: ${Math.round((rewardTotal + fee) * 100) / 100} BDT`,
+    `Total escrow: ${formatMoneyDetail(rewardTotal + fee, language)}`,
     draft.verificationType ? `Verification: ${draft.verificationType}` : undefined,
     draft.verificationTarget ? `Target: ${draft.verificationTarget}` : undefined,
     draft.websiteVisitSeconds ? `Visit timer: ${draft.websiteVisitSeconds}s` : undefined,
