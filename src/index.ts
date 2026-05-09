@@ -891,11 +891,7 @@ bot.action(/^wizard:category:(telegram|website|app|social|survey|data_entry|revi
 
   applyCategoryTemplate(draft, draft.category);
   taskDrafts.set(ctx.from.id, draft);
-  if (draft.category === "website") {
-    await showScreen(ctx, messages.taskWizard.websiteTimerPrompt, websiteTimerKeyboard(messages));
-    return;
-  }
-  await showScreen(ctx, verificationTargetPrompt(draft.verificationType!, messages));
+  await showScreen(ctx, messages.taskWizard.chooseVerification, verificationMethodKeyboard(draft.category, messages));
 });
 
 bot.action(/^wizard:website_timer:(30|60|120|custom)$/, async (ctx) => {
@@ -917,7 +913,7 @@ bot.action(/^wizard:website_timer:(30|60|120|custom)$/, async (ctx) => {
   draft.websiteVisitSeconds = Number(ctx.match[1]);
   draft.step = "target";
   taskDrafts.set(ctx.from.id, draft);
-  await showScreen(ctx, verificationTargetPrompt("website_visit", messages));
+  await showScreen(ctx, targetPromptForDraft(draft, messages));
 });
 
 bot.action(/^wizard:method:(auto_join|timer_visit|quiz_answer|manual_proof|webhook|app_tracking|in_app_code)$/, async (ctx) => {
@@ -932,12 +928,17 @@ bot.action(/^wizard:method:(auto_join|timer_visit|quiz_answer|manual_proof|webho
   applyVerificationMethod(draft, ctx.match[1]);
   taskDrafts.set(ctx.from.id, draft);
 
+  if (draft.verificationType === "website_visit") {
+    await showScreen(ctx, messages.taskWizard.websiteTimerPrompt, websiteTimerKeyboard(messages));
+    return;
+  }
+
   if (draft.verificationType) {
     await showScreen(ctx, verificationTargetPrompt(draft.verificationType, messages));
     return;
   }
 
-  await showScreen(ctx, messages.taskWizard.enterTitle);
+  await showScreen(ctx, targetPromptForDraft(draft, messages));
 });
 
 bot.action("wizard:instruction:skip", async (ctx) => {
@@ -2254,8 +2255,8 @@ function verificationMethodKeyboard(category: string, messages: MessageBundle = 
     rows.push([Markup.button.callback(messages.verificationMethods.autoJoin, "wizard:method:auto_join")]);
     rows.push([Markup.button.callback(messages.verificationMethods.manualProof, "wizard:method:manual_proof")]);
   } else if (category === "website") {
-    rows.push([Markup.button.callback(messages.verificationMethods.timerVisit, "wizard:method:timer_visit")]);
     rows.push([Markup.button.callback(messages.verificationMethods.manualProof, "wizard:method:manual_proof")]);
+    rows.push([Markup.button.callback(messages.verificationMethods.timerVisit, "wizard:method:timer_visit")]);
     rows.push([Markup.button.callback(messages.verificationMethods.webhook, "wizard:method:webhook")]);
   } else if (category === "app") {
     rows.push([Markup.button.callback(messages.verificationMethods.manualProof, "wizard:method:manual_proof")]);
@@ -2286,7 +2287,7 @@ function applyVerificationMethod(draft: TaskDraft, method: string) {
     draft.approvalType = "auto";
     draft.verificationType = "website_visit";
     draft.instructions = "Open the tracking link and keep the verification page open until the timer finishes.";
-    draft.step = "target";
+    draft.step = "website_timer";
     return;
   }
 
@@ -2331,7 +2332,7 @@ function applyVerificationMethod(draft: TaskDraft, method: string) {
   draft.verificationTarget = undefined;
   draft.title = defaultTitleForCategory(draft.category ?? "custom");
   draft.instructions = defaultInstructionForCategory(draft.category ?? "custom");
-  draft.step = "title";
+  draft.step = "target";
 }
 
 function defaultTitleForCategory(category: string): string {
@@ -2460,18 +2461,9 @@ async function handleTaskWizardMessage(ctx: Context & { from: TelegramFrom; mess
     }
     draft.workerLimit = workerLimit;
     if (draft.instructions) {
+      draft.step = "instructions";
       taskDrafts.set(ctx.from.id, draft);
-      await ctx.reply([
-        messages.taskWizard.templateReadyTitle,
-        "",
-        draft.instructions,
-        "",
-        messages.taskWizard.templateChoice
-      ].join("\n"), Markup.inlineKeyboard([
-        [Markup.button.callback(messages.buttons.useTemplate, "wizard:instruction:skip")],
-        [Markup.button.callback(messages.buttons.editInstruction, "wizard:instruction:edit")],
-        [Markup.button.callback(messages.common.cancel, "wizard:cancel")]
-      ]));
+      await ctx.reply(instructionPrompt(draft, messages), instructionTemplateKeyboard(messages));
       return;
     }
 
@@ -2486,7 +2478,7 @@ async function handleTaskWizardMessage(ctx: Context & { from: TelegramFrom; mess
       draft.instructions = text.slice(0, 1200);
     }
 
-    if (draft.approvalType === "auto") {
+    if (draft.approvalType === "auto" && !draft.verificationType) {
       draft.step = "verification";
       taskDrafts.set(ctx.from.id, draft);
       await ctx.reply(messages.taskWizard.autoVerificationType, Markup.inlineKeyboard([
@@ -2576,6 +2568,22 @@ function confirmTaskKeyboard(messages: MessageBundle = t) {
   ]);
 }
 
+function instructionTemplateKeyboard(messages: MessageBundle = t) {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback(messages.buttons.useTemplate, "wizard:instruction:skip")],
+    [Markup.button.callback(messages.common.cancel, "wizard:cancel")]
+  ]);
+}
+
+function instructionPrompt(draft: TaskDraft, messages: MessageBundle = t): string {
+  return [
+    messages.taskWizard.instructionOrTemplate,
+    "",
+    messages.taskWizard.templateReadyTitle,
+    draft.instructions
+  ].filter(Boolean).join("\n");
+}
+
 async function promptNextCommercialStep(ctx: Context & { from: TelegramFrom }, draft: TaskDraft) {
   const messages = userMessages(ctx.from.id);
   const user = store.snapshot().users.find((item) => item.id === ctx.from.id);
@@ -2593,9 +2601,9 @@ async function promptNextCommercialStep(ctx: Context & { from: TelegramFrom }, d
     return;
   }
 
-  draft.step = "confirm";
+  draft.step = "instructions";
   taskDrafts.set(ctx.from.id, draft);
-  await ctx.reply(formatDraftReview(draft, messages, store.snapshot().users.find((item) => item.id === ctx.from.id)?.language), confirmTaskKeyboard(messages));
+  await ctx.reply(instructionPrompt(draft, messages), instructionTemplateKeyboard(messages));
 }
 
 function formatDraftReview(draft: TaskDraft, messages: MessageBundle = t, language?: "en" | "bn"): string {
@@ -2626,6 +2634,13 @@ function verificationTargetPrompt(type: VerificationType, messages: MessageBundl
   if (type === "app_attribution") return messages.taskWizard.appTargetPrompt;
   if (type === "in_app_code") return messages.taskWizard.inAppCodePrompt;
   return messages.taskWizard.quizAnswerPrompt;
+}
+
+function targetPromptForDraft(draft: TaskDraft, messages: MessageBundle = t): string {
+  if (draft.verificationType) return verificationTargetPrompt(draft.verificationType, messages);
+  if (draft.category === "telegram") return "Send the Telegram channel/group link, username, or chat ID.";
+  if (draft.category === "website") return messages.taskWizard.websiteTargetPrompt;
+  return messages.taskWizard.websiteTargetPrompt;
 }
 
 function isCompleteDraft(draft: TaskDraft): draft is Required<Pick<TaskDraft, "title" | "category" | "approvalType" | "rewardPerWorker" | "workerLimit" | "instructions">> & TaskDraft {
