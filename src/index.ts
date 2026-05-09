@@ -28,6 +28,7 @@ import { getMessages, t } from "./messages.js";
 import { formatMoney, formatMoneyDetail, roundMoney } from "./money.js";
 import type { MessageBundle } from "./messages.js";
 import type {
+  AdminPanelMessage,
   ApiVerificationPayload,
   DepositRequest,
   Dispute,
@@ -99,7 +100,7 @@ const taskDrafts = new Map<number, TaskDraft>();
 const DRAFT_TTL_MS = 60 * 60 * 1000;
 const VERIFY_COOLDOWN_MS = 15 * 1000;
 const TELEGRAM_INVITE_LINK_TTL_MS = 30 * 60 * 1000;
-const TELEGRAM_ALLOWED_UPDATES = ["message", "callback_query", "my_chat_member", "chat_member"] as const;
+const TELEGRAM_ALLOWED_UPDATES = ["message", "callback_query", "channel_post", "my_chat_member", "chat_member"] as const;
 const verifyCooldowns = new Map<string, number>();
 const ACTIVE_TASK_CATEGORIES = new Set(["telegram", "website"]);
 const MIN_REWARD_USD: Record<string, number> = {
@@ -181,6 +182,11 @@ bot.command("cancel", async (ctx) => {
   customWithdrawWaiters.delete(ctx.from.id);
   supportWaiters.delete(ctx.from.id);
   await ctx.reply(userMessages(ctx.from.id).common.currentInputCancelled);
+});
+
+bot.command("chatid", async (ctx) => {
+  if (!ctx.from || !isAdmin(ctx.from.id)) return;
+  await ctx.reply(`Chat ID: ${ctx.chat.id}`);
 });
 
 bot.command("posttask", async (ctx) => {
@@ -293,6 +299,7 @@ bot.command("withdraw", async (ctx) => {
     amount,
     note: method
   }));
+  await publishWithdrawalPanel(withdrawal);
   await ctx.reply(`✅ Withdrawal request submitted\n\nID: ${withdrawal.id}`);
 });
 
@@ -356,6 +363,8 @@ bot.command("admin", async (ctx) => {
     `Pending disputes: ${pendingDisputes.length}`,
     `Pending submissions: ${pendingSubmissions.length}`,
     `Pending withdrawals: ${pendingWithdrawals.length}`,
+    `Panel channel: ${config.adminPanelChannelId ? "connected" : "not configured"}`,
+    `Console group: ${config.adminConsoleGroupId ? "connected" : "not configured"}`,
     "",
     "Use buttons below for quick review.",
     "",
@@ -372,8 +381,8 @@ bot.command("admin", async (ctx) => {
     "/resolvedispute <disputeId> pay/uphold",
     "/approve <submissionId>",
     "/reject <submissionId> <reason>",
-    "/paywithdraw <withdrawalId>",
-    "/rejectwithdraw <withdrawalId> <reason>"
+    "/paywd <withdrawalId>",
+    "/rejectwd <withdrawalId> <reason>"
   ].join("\n"), adminReviewKeyboard(pendingDeposits, pendingDisputes, pendingSubmissions, pendingWithdrawals));
 });
 
@@ -564,7 +573,9 @@ bot.command("paywithdraw", async (ctx) => {
 
   try {
     const withdrawal = await payWithdrawalById(withdrawalId);
-    await ctx.reply(`Withdrawal paid: ${withdrawal.id}`);
+    await syncWithdrawalPanelMessages(withdrawal.id);
+    await notifyWithdrawalUser(withdrawal, "paid");
+    await acknowledgeAdminCommand(ctx, `Withdrawal paid: ${withdrawal.id}`);
   } catch (error) {
     await ctx.reply((error as Error).message);
   }
@@ -581,7 +592,46 @@ bot.command("rejectwithdraw", async (ctx) => {
 
   try {
     const withdrawal = await rejectWithdrawalById(withdrawalId, reason);
-    await ctx.reply(`Withdrawal rejected: ${withdrawal.id}`);
+    await syncWithdrawalPanelMessages(withdrawal.id);
+    await notifyWithdrawalUser(withdrawal, "rejected");
+    await acknowledgeAdminCommand(ctx, `Withdrawal rejected: ${withdrawal.id}`);
+  } catch (error) {
+    await ctx.reply((error as Error).message);
+  }
+});
+
+bot.command("paywd", async (ctx) => {
+  if (!ctx.from || !isAdmin(ctx.from.id)) return;
+  const [, withdrawalId] = ctx.message.text.split(" ");
+  if (!withdrawalId) {
+    await ctx.reply("Format: /paywd <withdrawalId>");
+    return;
+  }
+
+  try {
+    const withdrawal = await payWithdrawalById(withdrawalId);
+    await syncWithdrawalPanelMessages(withdrawal.id);
+    await notifyWithdrawalUser(withdrawal, "paid");
+    await acknowledgeAdminCommand(ctx, `Withdrawal paid: ${withdrawal.id}`);
+  } catch (error) {
+    await ctx.reply((error as Error).message);
+  }
+});
+
+bot.command("rejectwd", async (ctx) => {
+  if (!ctx.from || !isAdmin(ctx.from.id)) return;
+  const [, withdrawalId, ...reasonParts] = ctx.message.text.split(" ");
+  const reason = reasonParts.join(" ").trim();
+  if (!withdrawalId || !reason) {
+    await ctx.reply("Format: /rejectwd <withdrawalId> <reason>");
+    return;
+  }
+
+  try {
+    const withdrawal = await rejectWithdrawalById(withdrawalId, reason);
+    await syncWithdrawalPanelMessages(withdrawal.id);
+    await notifyWithdrawalUser(withdrawal, "rejected");
+    await acknowledgeAdminCommand(ctx, `Withdrawal rejected: ${withdrawal.id}`);
   } catch (error) {
     await ctx.reply((error as Error).message);
   }
@@ -822,6 +872,25 @@ bot.action("menu:home", async (ctx) => {
 
 bot.action("noop", async (ctx) => {
   await ctx.answerCbQuery();
+});
+
+bot.on("channel_post", async (ctx) => {
+  const post = (ctx as unknown as { channelPost?: { chat: { id: number }; text?: string } }).channelPost;
+  const text = post?.text?.trim();
+  if (!post || !text) return;
+
+  if (text === "/chatid" || text.startsWith("/chatid@")) {
+    await ctx.telegram.sendMessage(post.chat.id, `Chat ID: ${post.chat.id}`);
+    return;
+  }
+
+  if (config.adminPanelChannelId && post.chat.id === config.adminPanelChannelId && (text === "/refresh" || text.startsWith("/refresh@"))) {
+    const pendingWithdrawals = store.snapshot().withdrawals.filter((withdrawal) => withdrawal.status === "pending");
+    for (const withdrawal of pendingWithdrawals) {
+      await syncWithdrawalPanelMessages(withdrawal.id);
+    }
+    await ctx.telegram.sendMessage(post.chat.id, `Panel refreshed. Pending withdrawals: ${pendingWithdrawals.length}`);
+  }
 });
 
 bot.on("my_chat_member", async (ctx) => {
@@ -1158,6 +1227,8 @@ bot.action(/^withdrawal:pay:(.+)$/, async (ctx) => {
 
   try {
     const withdrawal = await payWithdrawalById(ctx.match[1]);
+    await syncWithdrawalPanelMessages(withdrawal.id);
+    await notifyWithdrawalUser(withdrawal, "paid");
     await ctx.reply(`Withdrawal paid: ${withdrawal.id}`);
   } catch (error) {
     await ctx.reply((error as Error).message);
@@ -1233,10 +1304,107 @@ bot.action(/^withdrawal:reject:(.+)$/, async (ctx) => {
 
   try {
     const withdrawal = await rejectWithdrawalById(ctx.match[1], "Rejected by admin");
+    await syncWithdrawalPanelMessages(withdrawal.id);
+    await notifyWithdrawalUser(withdrawal, "rejected");
     await ctx.reply(`Withdrawal rejected: ${withdrawal.id}`);
   } catch (error) {
     await ctx.reply((error as Error).message);
   }
+});
+
+bot.action(/^admin:withdraw:pay:(.+)$/, async (ctx) => {
+  if (!isAdmin(ctx.from.id)) {
+    await ctx.answerCbQuery("Admin permission required.", { show_alert: true });
+    return;
+  }
+
+  try {
+    const withdrawal = await payWithdrawalById(ctx.match[1]);
+    await syncWithdrawalPanelMessages(withdrawal.id);
+    await notifyWithdrawalUser(withdrawal, "paid");
+    await ctx.answerCbQuery("Withdrawal marked paid.");
+  } catch (error) {
+    await ctx.answerCbQuery((error as Error).message, { show_alert: true });
+  }
+});
+
+bot.action(/^admin:withdraw:reject_menu:(.+)$/, async (ctx) => {
+  if (!isAdmin(ctx.from.id)) {
+    await ctx.answerCbQuery("Admin permission required.", { show_alert: true });
+    return;
+  }
+
+  const withdrawal = store.snapshot().withdrawals.find((item) => item.id === ctx.match[1]);
+  if (!withdrawal) {
+    await ctx.answerCbQuery("Withdrawal not found.", { show_alert: true });
+    return;
+  }
+
+  await ctx.answerCbQuery();
+  await ctx.editMessageReplyMarkup(adminWithdrawalKeyboard(withdrawal, true).reply_markup);
+});
+
+bot.action(/^admin:withdraw:reject:(.+):(wrong_account|suspicious|duplicate|user_request)$/, async (ctx) => {
+  if (!isAdmin(ctx.from.id)) {
+    await ctx.answerCbQuery("Admin permission required.", { show_alert: true });
+    return;
+  }
+
+  const reason = withdrawalPresetRejectReason(ctx.match[2]);
+  try {
+    const withdrawal = await rejectWithdrawalById(ctx.match[1], reason);
+    await syncWithdrawalPanelMessages(withdrawal.id);
+    await notifyWithdrawalUser(withdrawal, "rejected");
+    await ctx.answerCbQuery("Withdrawal rejected.");
+  } catch (error) {
+    await ctx.answerCbQuery((error as Error).message, { show_alert: true });
+  }
+});
+
+bot.action(/^admin:withdraw:custom:(.+)$/, async (ctx) => {
+  if (!isAdmin(ctx.from.id)) {
+    await ctx.answerCbQuery("Admin permission required.", { show_alert: true });
+    return;
+  }
+
+  const command = `/rejectwd ${ctx.match[1]} <reason>`;
+  await ctx.answerCbQuery(`Use console group: ${command}`, { show_alert: true });
+});
+
+bot.action(/^admin:withdraw:back:(.+)$/, async (ctx) => {
+  if (!isAdmin(ctx.from.id)) {
+    await ctx.answerCbQuery("Admin permission required.", { show_alert: true });
+    return;
+  }
+
+  const withdrawal = store.snapshot().withdrawals.find((item) => item.id === ctx.match[1]);
+  if (!withdrawal) {
+    await ctx.answerCbQuery("Withdrawal not found.", { show_alert: true });
+    return;
+  }
+
+  await ctx.answerCbQuery();
+  await ctx.editMessageReplyMarkup(adminWithdrawalKeyboard(withdrawal).reply_markup);
+});
+
+bot.action(/^admin:withdraw:user:(\d+)$/, async (ctx) => {
+  if (!isAdmin(ctx.from.id)) {
+    await ctx.answerCbQuery("Admin permission required.", { show_alert: true });
+    return;
+  }
+
+  await ctx.answerCbQuery();
+  await ctx.reply(formatUserLookup(Number(ctx.match[1])));
+});
+
+bot.action(/^admin:withdraw:history:(\d+)$/, async (ctx) => {
+  if (!isAdmin(ctx.from.id)) {
+    await ctx.answerCbQuery("Admin permission required.", { show_alert: true });
+    return;
+  }
+
+  await ctx.answerCbQuery();
+  await ctx.reply(formatAdminWithdrawalHistory(Number(ctx.match[1])));
 });
 
 bot.action(/^task:(.+)$/, async (ctx) => {
@@ -2011,6 +2179,7 @@ async function submitSavedWithdrawal(ctx: Context, userId: number, amount: numbe
     amount,
     note: method
   }));
+  await publishWithdrawalPanel(withdrawal);
   const text = `${labels.withdrawSubmitted}\n\nID: ${withdrawal.id}\n${labels.receive}: ${formatMoneyDetail(amount - fee, user.language)}`;
   if (userContext) await showFlowScreen(userContext, text, walletKeyboard(user));
   else await ctx.reply(text);
@@ -3123,8 +3292,8 @@ function adminReviewKeyboard(deposits: DepositRequest[], disputes: Dispute[], su
       Markup.button.callback(`Review ${shortId(submission.id)}`, `submission:view:${submission.id}`)
     ]),
     ...withdrawals.slice(0, 5).map((withdrawal) => [
-      Markup.button.callback(`Pay ${shortId(withdrawal.id)} - ${withdrawal.amount} BDT`, `withdrawal:pay:${withdrawal.id}`),
-      Markup.button.callback(`Reject ${shortId(withdrawal.id)}`, `withdrawal:reject:${withdrawal.id}`)
+      Markup.button.callback(`Pay ${shortId(withdrawal.id)} - ${withdrawal.amount} BDT`, `admin:withdraw:pay:${withdrawal.id}`),
+      Markup.button.callback(`Reject ${shortId(withdrawal.id)}`, `admin:withdraw:reject_menu:${withdrawal.id}`)
     ])
   ];
 
@@ -3133,6 +3302,214 @@ function adminReviewKeyboard(deposits: DepositRequest[], disputes: Dispute[], su
   }
 
   return Markup.inlineKeyboard(rows);
+}
+
+function adminPanelTargets(): Array<{ chatId: number; surface: AdminPanelMessage["surface"] }> {
+  return [
+    config.adminPanelChannelId ? { chatId: config.adminPanelChannelId, surface: "channel" as const } : undefined,
+    config.adminConsoleGroupId ? { chatId: config.adminConsoleGroupId, surface: "group" as const } : undefined
+  ].filter((item): item is { chatId: number; surface: AdminPanelMessage["surface"] } => Boolean(item));
+}
+
+async function publishWithdrawalPanel(withdrawal: Withdrawal) {
+  for (const target of adminPanelTargets()) {
+    const existing = store.snapshot().adminPanelMessages.find((message) =>
+      message.entityType === "withdrawal" &&
+      message.entityId === withdrawal.id &&
+      message.surface === target.surface
+    );
+    if (existing) continue;
+
+    try {
+      const sent = await bot.telegram.sendMessage(
+        target.chatId,
+        formatWithdrawalPanelCard(withdrawal, target.surface),
+        taskHtmlExtra(adminWithdrawalKeyboard(withdrawal))
+      );
+      await store.upsertAdminPanelMessage({
+        id: localId("apm"),
+        entityType: "withdrawal",
+        entityId: withdrawal.id,
+        chatId: target.chatId,
+        messageId: sent.message_id,
+        surface: target.surface,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      });
+    } catch (error) {
+      console.warn("Failed to publish withdrawal panel message", target, error instanceof Error ? error.message : error);
+    }
+  }
+}
+
+async function syncWithdrawalPanelMessages(withdrawalId: string) {
+  const withdrawal = store.snapshot().withdrawals.find((item) => item.id === withdrawalId);
+  if (!withdrawal) return;
+
+  if (withdrawal.status === "pending") {
+    await publishWithdrawalPanel(withdrawal);
+  }
+
+  const messages = store.snapshot().adminPanelMessages.filter((message) =>
+    message.entityType === "withdrawal" &&
+    message.entityId === withdrawal.id
+  );
+
+  for (const message of messages) {
+    await editWithdrawalPanelMessage(message, withdrawal);
+  }
+}
+
+async function editWithdrawalPanelMessage(message: AdminPanelMessage, withdrawal: Withdrawal) {
+  try {
+    await bot.telegram.editMessageText(
+      message.chatId,
+      message.messageId,
+      undefined,
+      formatWithdrawalPanelCard(withdrawal, message.surface),
+      taskHtmlExtra(adminWithdrawalKeyboard(withdrawal)) as Parameters<typeof bot.telegram.editMessageText>[4]
+    );
+    await store.upsertAdminPanelMessage({ ...message, updatedAt: new Date().toISOString() });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    if (errorMessage.includes("message is not modified")) return;
+
+    try {
+      const replacement = await bot.telegram.sendMessage(
+        message.chatId,
+        formatWithdrawalPanelCard(withdrawal, message.surface),
+        taskHtmlExtra(adminWithdrawalKeyboard(withdrawal))
+      );
+      await store.upsertAdminPanelMessage({
+        ...message,
+        messageId: replacement.message_id,
+        updatedAt: new Date().toISOString()
+      });
+    } catch (sendError) {
+      console.warn("Failed to sync withdrawal panel message", message, sendError instanceof Error ? sendError.message : sendError);
+    }
+  }
+}
+
+function formatWithdrawalPanelCard(withdrawal: Withdrawal, surface: AdminPanelMessage["surface"]): string {
+  const state = store.snapshot();
+  const user = state.users.find((item) => item.id === withdrawal.userId);
+  const trust = calculateTrustScore(state, withdrawal.userId);
+  const commandHint = surface === "group" && withdrawal.status === "pending"
+    ? [
+      "",
+      "<b>Console</b>",
+      `<code>/paywd ${escapeHtml(withdrawal.id)}</code>`,
+      `<code>/rejectwd ${escapeHtml(withdrawal.id)} reason</code>`
+    ]
+    : [];
+
+  return [
+    "🏦 <b>Withdrawal Request</b>",
+    "",
+    `<b>ID:</b> <code>${escapeHtml(withdrawal.id)}</code>`,
+    `<b>User:</b> ${escapeHtml(formatAdminUser(user, withdrawal.userId))}`,
+    `<b>Amount:</b> ${escapeHtml(formatMoneyDetail(withdrawal.amount, "en"))}`,
+    `<b>Method:</b> ${escapeHtml(withdrawal.method)}`,
+    `<b>Trust:</b> ${escapeHtml(`${trust.badge} ${trust.level} ${trust.score}/100`)}`,
+    `<b>Status:</b> ${formatWithdrawalPanelStatus(withdrawal)}`,
+    withdrawal.reviewedAt ? `<b>Reviewed:</b> ${escapeHtml(formatDateTime(withdrawal.reviewedAt))}` : undefined,
+    withdrawal.rejectReason ? `<b>Reason:</b> ${escapeHtml(withdrawal.rejectReason)}` : undefined,
+    ...commandHint
+  ].filter(Boolean).join("\n");
+}
+
+function adminWithdrawalKeyboard(withdrawal: Withdrawal, rejectExpanded = false) {
+  if (withdrawal.status !== "pending") {
+    return Markup.inlineKeyboard([
+      [Markup.button.callback(`Status: ${withdrawal.status}`, "noop")],
+      [
+        Markup.button.callback("Profile", `admin:withdraw:user:${withdrawal.userId}`),
+        Markup.button.callback("History", `admin:withdraw:history:${withdrawal.userId}`)
+      ]
+    ]);
+  }
+
+  if (rejectExpanded) {
+    return Markup.inlineKeyboard([
+      [
+        Markup.button.callback("Wrong account", `admin:withdraw:reject:${withdrawal.id}:wrong_account`),
+        Markup.button.callback("Suspicious", `admin:withdraw:reject:${withdrawal.id}:suspicious`)
+      ],
+      [
+        Markup.button.callback("Duplicate", `admin:withdraw:reject:${withdrawal.id}:duplicate`),
+        Markup.button.callback("User request", `admin:withdraw:reject:${withdrawal.id}:user_request`)
+      ],
+      [Markup.button.callback("Custom reason", `admin:withdraw:custom:${withdrawal.id}`)],
+      [Markup.button.callback("Back", `admin:withdraw:back:${withdrawal.id}`)]
+    ]);
+  }
+
+  return Markup.inlineKeyboard([
+    [
+      Markup.button.callback("Approve / Paid", `admin:withdraw:pay:${withdrawal.id}`),
+      Markup.button.callback("Reject", `admin:withdraw:reject_menu:${withdrawal.id}`)
+    ],
+    [
+      Markup.button.callback("Profile", `admin:withdraw:user:${withdrawal.userId}`),
+      Markup.button.callback("History", `admin:withdraw:history:${withdrawal.userId}`)
+    ]
+  ]);
+}
+
+function withdrawalPresetRejectReason(reason: string): string {
+  if (reason === "wrong_account") return "Wrong payout account";
+  if (reason === "suspicious") return "Suspicious withdrawal request";
+  if (reason === "duplicate") return "Duplicate withdrawal request";
+  if (reason === "user_request") return "Cancelled by user request";
+  return "Rejected by admin";
+}
+
+function formatWithdrawalPanelStatus(withdrawal: Withdrawal): string {
+  if (withdrawal.status === "paid") return "✅ Paid";
+  if (withdrawal.status === "rejected") return "❌ Rejected";
+  return "⏳ Pending";
+}
+
+function formatAdminUser(user: { username?: string; firstName?: string } | undefined, userId: number): string {
+  const name = user?.firstName || user?.username;
+  const username = user?.username ? ` (@${user.username})` : "";
+  return name ? `${name}${username} / ${userId}` : String(userId);
+}
+
+function formatAdminWithdrawalHistory(userId: number): string {
+  const withdrawals = store.snapshot().withdrawals.filter((withdrawal) => withdrawal.userId === userId);
+  if (withdrawals.length === 0) return `No withdrawals for ${userId}.`;
+
+  return [
+    `Withdrawal history for ${userId}`,
+    "",
+    ...withdrawals.slice(-8).reverse().map((withdrawal) => [
+      `${withdrawal.id}: ${withdrawal.status}`,
+      `Amount: ${formatMoneyDetail(withdrawal.amount, "en")}`,
+      withdrawal.rejectReason ? `Reason: ${withdrawal.rejectReason}` : undefined
+    ].filter(Boolean).join("\n"))
+  ].join("\n\n");
+}
+
+function formatDateTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toISOString().replace("T", " ").slice(0, 19);
+}
+
+async function notifyWithdrawalUser(withdrawal: Withdrawal, status: "paid" | "rejected") {
+  const user = store.snapshot().users.find((item) => item.id === withdrawal.userId);
+  const amount = formatMoneyDetail(withdrawal.amount, user?.language);
+  const text = status === "paid"
+    ? `✅ Withdrawal paid\n\nID: ${withdrawal.id}\nAmount: ${amount}`
+    : `❌ Withdrawal rejected\n\nID: ${withdrawal.id}\nAmount: ${amount}\nReason: ${withdrawal.rejectReason ?? "Rejected by admin"}`;
+  await sendTelegramMessageSafe(withdrawal.userId, text);
+}
+
+async function acknowledgeAdminCommand(ctx: Context, text: string) {
+  if (config.adminConsoleGroupId && ctx.chat?.id === config.adminConsoleGroupId) return;
+  await ctx.reply(text);
 }
 
 function disputeListKeyboard(disputes: Dispute[]) {
@@ -3442,6 +3819,7 @@ async function rejectWithdrawalById(withdrawalId: string, reason: string) {
   const rejectedWithdrawal: Withdrawal = {
     ...withdrawal,
     status: "rejected",
+    rejectReason: reason,
     reviewedAt: new Date().toISOString()
   };
   await store.updateWithdrawal(rejectedWithdrawal);

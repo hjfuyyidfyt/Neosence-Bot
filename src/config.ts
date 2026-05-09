@@ -1,9 +1,16 @@
 import "dotenv/config";
 import { z } from "zod";
 
+const optionalChatId = z.preprocess(
+  (value) => value === "" || value === undefined ? undefined : Number(value),
+  z.number().optional()
+);
+
 const envSchema = z.object({
   BOT_TOKEN: z.string().min(1),
   ADMIN_IDS: z.string().default(""),
+  ADMIN_PANEL_CHANNEL_ID: optionalChatId,
+  ADMIN_CONSOLE_GROUP_ID: optionalChatId,
   DATABASE_URL: z.string().optional(),
   PUBLIC_URL: z.string().optional(),
   DATA_FILE: z.string().default("./data/neosence-store.json"),
@@ -24,6 +31,8 @@ export const config = {
   adminIds: env.ADMIN_IDS.split(",")
     .map((id) => Number(id.trim()))
     .filter((id) => Number.isFinite(id)),
+  adminPanelChannelId: env.ADMIN_PANEL_CHANNEL_ID,
+  adminConsoleGroupId: env.ADMIN_CONSOLE_GROUP_ID,
   dataFile: env.DATA_FILE,
   platformFeePercent: env.PLATFORM_FEE_PERCENT,
   autoWithdrawHoldHours: env.AUTO_WITHDRAW_HOLD_HOURS,

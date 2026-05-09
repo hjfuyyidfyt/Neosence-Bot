@@ -2,6 +2,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import pg from "pg";
 import type {
+  AdminPanelMessage,
   DepositRequest,
   Dispute,
   StoreState,
@@ -33,7 +34,8 @@ const emptyState = (): StoreState => ({
   disputes: [],
   trackedChats: [],
   telegramInviteLinks: [],
-  telegramMemberships: []
+  telegramMemberships: [],
+  adminPanelMessages: []
 });
 
 export interface NeosenceStore {
@@ -58,6 +60,7 @@ export interface NeosenceStore {
   upsertTrackedChat(chat: TrackedChat): Promise<void>;
   upsertTelegramInviteLink(link: TelegramInviteLinkRecord): Promise<void>;
   upsertTelegramMembership(membership: TelegramMembershipRecord): Promise<void>;
+  upsertAdminPanelMessage(message: AdminPanelMessage): Promise<void>;
 }
 
 abstract class CachedStore implements NeosenceStore {
@@ -183,6 +186,13 @@ abstract class CachedStore implements NeosenceStore {
     const index = this.state.telegramMemberships.findIndex((item) => item.id === membership.id);
     if (index >= 0) this.state.telegramMemberships[index] = membership;
     else this.state.telegramMemberships.push(membership);
+    await this.save();
+  }
+
+  async upsertAdminPanelMessage(message: AdminPanelMessage): Promise<void> {
+    const index = this.state.adminPanelMessages.findIndex((item) => item.id === message.id);
+    if (index >= 0) this.state.adminPanelMessages[index] = message;
+    else this.state.adminPanelMessages.push(message);
     await this.save();
   }
 }

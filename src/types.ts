@@ -101,6 +101,7 @@ export interface Withdrawal {
   amount: number;
   method: string;
   status: "pending" | "paid" | "rejected";
+  rejectReason?: string;
   createdAt: string;
   reviewedAt?: string;
 }
@@ -195,6 +196,17 @@ export interface TelegramMembershipRecord {
   leftAt?: string;
 }
 
+export interface AdminPanelMessage {
+  id: string;
+  entityType: "withdrawal";
+  entityId: string;
+  chatId: number;
+  messageId: number;
+  surface: "channel" | "group";
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface StoreState {
   users: UserProfile[];
   tasks: Task[];
@@ -209,6 +221,7 @@ export interface StoreState {
   trackedChats: TrackedChat[];
   telegramInviteLinks: TelegramInviteLinkRecord[];
   telegramMemberships: TelegramMembershipRecord[];
+  adminPanelMessages: AdminPanelMessage[];
 }
 
 export interface ApiVerificationPayload {
