@@ -23,7 +23,7 @@ import {
   visibleTasks,
   walletSummary
 } from "./services.js";
-import { formatTask, mainMenu, modeMenu, taskActionButtons } from "./ui.js";
+import { formatTask, mainMenu, modeMenu, taskActionButtons, taskHtmlExtra } from "./ui.js";
 import { getMessages, t } from "./messages.js";
 import { formatMoney, formatMoneyDetail, roundMoney } from "./money.js";
 import type { MessageBundle } from "./messages.js";
@@ -232,7 +232,7 @@ bot.command("posttask", async (ctx) => {
     note: "MVP records escrow lock. Connect deposit validation before public launch."
   }));
 
-  await ctx.reply(`${messages.taskWizard.published}\n\n${formatTask(task, user.language)}\n\n${messages.wallet.escrowLocked} ${formatMoneyDetail(escrowRequired(task), user.language)}`);
+  await ctx.reply(`${messages.taskWizard.published}\n\n${formatTask(task, user.language)}\n\n${messages.wallet.escrowLocked} ${formatMoneyDetail(escrowRequired(task), user.language)}`, taskHtmlExtra());
 });
 
 bot.command("mytasks", async (ctx) => {
@@ -1022,7 +1022,7 @@ bot.action("wizard:confirm", async (ctx) => {
   }));
   taskDrafts.delete(ctx.from.id);
 
-  await ctx.reply(`${messages.taskWizard.published}\n\n${formatTask(task, user.language)}\n\n${messages.wallet.escrowLocked} ${formatMoneyDetail(escrowRequired(task), user.language)}`, mainMenu(user));
+  await ctx.reply(`${messages.taskWizard.published}\n\n${formatTask(task, user.language)}\n\n${messages.wallet.escrowLocked} ${formatMoneyDetail(escrowRequired(task), user.language)}`, taskHtmlExtra(mainMenu(user)));
 });
 
 bot.action("wizard:cancel", async (ctx) => {
@@ -1061,7 +1061,7 @@ bot.action(/^campaign:view:(.+)$/, async (ctx) => {
 
   try {
     const task = getReviewableTask(ctx.match[1], user.id);
-    await showScreen(ctx, formatCampaignDetail(task.id, user.language), campaignActionKeyboard(task.id, task.status, user.language));
+    await showScreen(ctx, formatCampaignDetail(task.id, user.language), taskHtmlExtra(campaignActionKeyboard(task.id, task.status, user.language)));
   } catch (error) {
     await ctx.reply((error as Error).message);
   }
@@ -1222,7 +1222,7 @@ bot.action(/^task:(.+)$/, async (ctx) => {
     return;
   }
   const user = await ensureUser(ctx.from);
-  await showScreen(ctx, formatTask(task, user.language), taskActionButtons(task, user.language));
+  await showScreen(ctx, formatTask(task, user.language), taskHtmlExtra(taskActionButtons(task, user.language)));
 });
 
 bot.action(/^proof:(.+)$/, async (ctx) => {
@@ -1533,7 +1533,7 @@ async function showEarnCategory(ctx: Context & { from: TelegramFrom }, category:
   }
 
   const task = rankEarnTasks(filtered)[0];
-  await showScreen(ctx, formatEarnFeedTask(task, category, user?.language), earnFeedKeyboard(task, category, messages, user));
+  await showScreen(ctx, formatEarnFeedTask(task, category, user?.language), taskHtmlExtra(earnFeedKeyboard(task, category, messages, user)));
 }
 
 function formatWallet(userId: number, mode: "freelancer" | "buyer", language?: "en" | "bn"): string {

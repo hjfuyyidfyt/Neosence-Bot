@@ -63,19 +63,25 @@ export function formatTask(task: Task, language?: LanguageCode): string {
       visitTimer: "Visit timer",
       instructions: "Instructions"
     };
+  const target = formatTaskTarget(task, language);
 
   return [
-    `💼 ${task.title}`,
+    `💼 ${bold(task.title)}`,
     "",
-    `${categoryIcon(task.category)} ${category}`,
-    `💵 ${labels.reward}: ${formatMoney(task.rewardPerWorker, language)}`,
-    `👥 ${labels.workers}: ${task.completedCount}/${task.workerLimit}`,
-    `✅ ${labels.verify}: ${verificationLabel(task, language)}`,
-    task.websiteVisitSeconds ? `⏱ ${labels.visitTimer}: ${task.websiteVisitSeconds}s` : undefined,
+    `${categoryIcon(task.category)} ${bold(category)}`,
+    `💵 ${bold(`${labels.reward}:`)} ${formatMoney(task.rewardPerWorker, language)}`,
+    `👥 ${bold(`${labels.workers}:`)} ${task.completedCount}/${task.workerLimit}`,
+    `✅ ${bold(`${labels.verify}:`)} ${escapeHtml(verificationLabel(task, language))}`,
+    task.websiteVisitSeconds ? `⏱ ${bold(`${labels.visitTimer}:`)} ${task.websiteVisitSeconds}s` : undefined,
+    target,
     "",
-    `📌 ${labels.instructions}`,
-    task.instructions
+    `📌 ${bold(labels.instructions)}`,
+    escapeHtml(task.instructions)
   ].filter((line): line is string => line !== undefined).join("\n");
+}
+
+export function taskHtmlExtra<T extends object | undefined>(extra?: T) {
+  return { ...(extra ?? {}), parse_mode: "HTML" as const };
 }
 
 function categoryIcon(category: string): string {
@@ -115,4 +121,24 @@ function verificationLabel(task: Task, language?: LanguageCode): string {
 
   if (task.approvalType === "manual") return labels.manual;
   return labels[task.verificationType as keyof typeof labels] ?? labels.auto;
+}
+
+function formatTaskTarget(task: Task, language?: LanguageCode): string | undefined {
+  if (!task.verificationTarget) return undefined;
+  const label = task.category === "website"
+    ? (language === "bn" ? "লিংক" : "Link")
+    : (language === "bn" ? "টার্গেট" : "Target");
+  const icon = task.category === "website" ? "🔗" : "🎯";
+  return ["", `${icon} ${bold(label)}`, escapeHtml(task.verificationTarget)].join("\n");
+}
+
+function bold(value: string): string {
+  return `<b>${escapeHtml(value)}</b>`;
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
