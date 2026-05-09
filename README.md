@@ -56,6 +56,8 @@ USD_TO_BDT=120
 
 `ADMIN_PANEL_CHANNEL_ID` and `ADMIN_CONSOLE_GROUP_ID` are optional but recommended. Add the bot as admin in a private channel for synced request cards, and in a private group for admin commands such as `/paywd <withdrawalId>` and `/rejectwd <withdrawalId> <reason>`.
 
+When `ADMIN_CONSOLE_GROUP_ID` is set, Neosence automatically registers the full admin slash-command menu only inside that private group. Admin commands sent in the normal bot chat are ignored with a generic unknown-command response.
+
 Railway will run:
 
 ```bash

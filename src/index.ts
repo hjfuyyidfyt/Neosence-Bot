@@ -108,6 +108,48 @@ const MIN_REWARD_USD: Record<string, number> = {
   website: 0.034
 };
 const localId = (prefix: string) => `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+const PUBLIC_BOT_COMMANDS = [
+  { command: "start", description: "🏠 Open Neosence home" },
+  { command: "earn", description: "💼 Find tasks to complete" },
+  { command: "wallet", description: "💰 View wallet and withdrawals" },
+  { command: "profile", description: "👤 View profile and trust score" },
+  { command: "language", description: "🌐 Change language" },
+  { command: "cancel", description: "✖️ Cancel current flow" }
+];
+const ADMIN_CONSOLE_COMMANDS = [
+  { command: "admin", description: "🛠️ Open admin dashboard" },
+  { command: "chatid", description: "🆔 Show this group or channel ID" },
+  { command: "help", description: "❔ Show admin command guide" },
+  { command: "stats", description: "📊 View live platform stats" },
+  { command: "pending", description: "⏳ Review all pending items" },
+  { command: "refresh", description: "🔄 Sync admin panel messages" },
+  { command: "withdrawals", description: "🏦 Show pending withdrawals" },
+  { command: "paywd", description: "✅ Mark withdrawal as paid" },
+  { command: "rejectwd", description: "❌ Reject withdrawal with reason" },
+  { command: "paywithdraw", description: "✅ Legacy withdrawal paid command" },
+  { command: "rejectwithdraw", description: "❌ Legacy withdrawal reject command" },
+  { command: "deposits", description: "🧾 Show pending deposits" },
+  { command: "approvedeposit", description: "💰 Approve and credit deposit" },
+  { command: "rejectdeposit", description: "🚫 Reject deposit with reason" },
+  { command: "deposit", description: "➕ Add balance to a user" },
+  { command: "submissions", description: "📌 Show pending manual proofs" },
+  { command: "approve", description: "✅ Approve manual proof" },
+  { command: "reject", description: "❌ Reject manual proof with reason" },
+  { command: "disputes", description: "⚖️ Show open disputes" },
+  { command: "resolvedispute", description: "🧑‍⚖️ Resolve dispute decision" },
+  { command: "tickets", description: "🎧 Show open support tickets" },
+  { command: "closeticket", description: "✅ Close a support ticket" },
+  { command: "user", description: "👤 View user wallet and activity" },
+  { command: "ban", description: "🔒 Ban a user from Neosence" },
+  { command: "unban", description: "🔓 Restore user access" },
+  { command: "broadcast", description: "📣 Prepare announcement flow" },
+  { command: "audit", description: "🧾 View recent admin activity" },
+  { command: "settings", description: "⚙️ View system settings" }
+];
+const ADMIN_PANEL_CHANNEL_COMMANDS = [
+  { command: "chatid", description: "🆔 Show this channel ID" },
+  { command: "refresh", description: "🔄 Refresh pending panel cards" }
+];
 const botRuntime = {
   launchState: "starting" as "starting" | "running" | "stopped" | "failed",
   lastError: undefined as string | undefined
@@ -186,6 +228,10 @@ bot.command("cancel", async (ctx) => {
 
 bot.command("chatid", async (ctx) => {
   if (!ctx.from || !isAdmin(ctx.from.id)) return;
+  if (ctx.chat.type === "private") {
+    await ctx.reply(adminUnknownCommandText());
+    return;
+  }
   await ctx.reply(`Chat ID: ${ctx.chat.id}`);
 });
 
@@ -349,50 +395,74 @@ bot.command("depositreq", async (ctx) => {
 });
 
 bot.command("admin", async (ctx) => {
-  if (!ctx.from || !isAdmin(ctx.from.id)) return;
-  const state = store.snapshot();
-  const pendingDeposits = state.deposits.filter((item) => item.status === "pending");
-  const pendingDisputes = state.disputes.filter((item) => item.status === "open");
-  const pendingSubmissions = state.submissions.filter((item) => item.status === "pending");
-  const pendingWithdrawals = state.withdrawals.filter((item) => item.status === "pending");
+  if (!(await requireAdminConsole(ctx))) return;
+  await ctx.reply(formatAdminDashboard(), adminDashboardKeyboard());
+});
+
+bot.command("help", async (ctx) => {
+  if (!(await requireAdminConsole(ctx))) return;
+  await ctx.reply(formatAdminHelp(), adminDashboardKeyboard());
+});
+
+bot.command("stats", async (ctx) => {
+  if (!(await requireAdminConsole(ctx))) return;
+  await ctx.reply(formatAdminStats(), adminDashboardKeyboard());
+});
+
+bot.command("pending", async (ctx) => {
+  if (!(await requireAdminConsole(ctx))) return;
+  await ctx.reply(formatAdminPending(), adminDashboardKeyboard());
+});
+
+bot.command("refresh", async (ctx) => {
+  if (!(await requireAdminConsole(ctx))) return;
+  const count = await refreshAdminPanelMessages();
+  await ctx.reply(`🔄 Panel synced\n\nPending withdrawals refreshed: ${count}`, adminDashboardKeyboard());
+});
+
+bot.command("withdrawals", async (ctx) => {
+  if (!(await requireAdminConsole(ctx))) return;
+  await ctx.reply(formatAdminWithdrawalList(), adminWithdrawalListKeyboard());
+});
+
+bot.command("deposits", async (ctx) => {
+  if (!(await requireAdminConsole(ctx))) return;
+  await ctx.reply(formatAdminDepositList(), adminDepositListKeyboard());
+});
+
+bot.command("submissions", async (ctx) => {
+  if (!(await requireAdminConsole(ctx))) return;
+  const pendingSubmissions = store.snapshot().submissions.filter((item) => item.status === "pending");
+  await ctx.reply(formatPendingSubmissions(pendingSubmissions), buyerSubmissionKeyboard(pendingSubmissions));
+});
+
+bot.command("settings", async (ctx) => {
+  if (!(await requireAdminConsole(ctx))) return;
+  await ctx.reply(formatAdminSettings(), adminDashboardKeyboard());
+});
+
+bot.command("audit", async (ctx) => {
+  if (!(await requireAdminConsole(ctx))) return;
+  await ctx.reply(formatAdminAudit(), adminDashboardKeyboard());
+});
+
+bot.command("broadcast", async (ctx) => {
+  if (!(await requireAdminConsole(ctx))) return;
   await ctx.reply([
-    "Neosence Admin",
-    `Users: ${state.users.length}`,
-    `Tasks: ${state.tasks.length}`,
-    `Pending deposits: ${pendingDeposits.length}`,
-    `Pending disputes: ${pendingDisputes.length}`,
-    `Pending submissions: ${pendingSubmissions.length}`,
-    `Pending withdrawals: ${pendingWithdrawals.length}`,
-    `Panel channel: ${config.adminPanelChannelId ? "connected" : "not configured"}`,
-    `Console group: ${config.adminConsoleGroupId ? "connected" : "not configured"}`,
+    "📣 Broadcast",
     "",
-    "Use buttons below for quick review.",
-    "",
-    "Commands:",
-    "/deposit <userId> <amount> <note>",
-    "/approvedeposit <depositId>",
-    "/rejectdeposit <depositId> <reason>",
-    "/user <userId>",
-    "/ban <userId>",
-    "/unban <userId>",
-    "/tickets",
-    "/closeticket <ticketId>",
-    "/disputes",
-    "/resolvedispute <disputeId> pay/uphold",
-    "/approve <submissionId>",
-    "/reject <submissionId> <reason>",
-    "/paywd <withdrawalId>",
-    "/rejectwd <withdrawalId> <reason>"
-  ].join("\n"), adminReviewKeyboard(pendingDeposits, pendingDisputes, pendingSubmissions, pendingWithdrawals));
+    "Broadcast drafting is reserved for the next admin-panel slice.",
+    "For now, keep announcements manual so no message is sent accidentally."
+  ].join("\n"), adminDashboardKeyboard());
 });
 
 bot.command("disputes", async (ctx) => {
-  if (!ctx.from || !isAdmin(ctx.from.id)) return;
+  if (!(await requireAdminConsole(ctx))) return;
   await ctx.reply(formatOpenDisputes(), disputeListKeyboard(store.snapshot().disputes.filter((item) => item.status === "open")));
 });
 
 bot.command("resolvedispute", async (ctx) => {
-  if (!ctx.from || !isAdmin(ctx.from.id)) return;
+  if (!(await requireAdminConsole(ctx))) return;
   const [, disputeId, resolution] = ctx.message.text.split(" ");
   if (!disputeId || !["pay", "uphold"].includes(resolution)) {
     await ctx.reply("Format: /resolvedispute <disputeId> pay/uphold");
@@ -410,12 +480,12 @@ bot.command("resolvedispute", async (ctx) => {
 });
 
 bot.command("tickets", async (ctx) => {
-  if (!ctx.from || !isAdmin(ctx.from.id)) return;
+  if (!(await requireAdminConsole(ctx))) return;
   await ctx.reply(formatOpenTickets());
 });
 
 bot.command("closeticket", async (ctx) => {
-  if (!ctx.from || !isAdmin(ctx.from.id)) return;
+  if (!(await requireAdminConsole(ctx))) return;
   const [, ticketId] = ctx.message.text.split(" ");
   if (!ticketId) {
     await ctx.reply("Format: /closeticket <ticketId>");
@@ -431,7 +501,7 @@ bot.command("closeticket", async (ctx) => {
 });
 
 bot.command("ban", async (ctx) => {
-  if (!ctx.from || !isAdmin(ctx.from.id)) return;
+  if (!(await requireAdminConsole(ctx))) return;
   const [, userIdRaw] = ctx.message.text.split(" ");
   const userId = Number(userIdRaw);
   if (!Number.isFinite(userId)) {
@@ -448,7 +518,7 @@ bot.command("ban", async (ctx) => {
 });
 
 bot.command("unban", async (ctx) => {
-  if (!ctx.from || !isAdmin(ctx.from.id)) return;
+  if (!(await requireAdminConsole(ctx))) return;
   const [, userIdRaw] = ctx.message.text.split(" ");
   const userId = Number(userIdRaw);
   if (!Number.isFinite(userId)) {
@@ -465,7 +535,7 @@ bot.command("unban", async (ctx) => {
 });
 
 bot.command("user", async (ctx) => {
-  if (!ctx.from || !isAdmin(ctx.from.id)) return;
+  if (!(await requireAdminConsole(ctx))) return;
   const [, userIdRaw] = ctx.message.text.split(" ");
   const userId = Number(userIdRaw);
   if (!Number.isFinite(userId)) {
@@ -477,7 +547,7 @@ bot.command("user", async (ctx) => {
 });
 
 bot.command("deposit", async (ctx) => {
-  if (!ctx.from || !isAdmin(ctx.from.id)) return;
+  if (!(await requireAdminConsole(ctx))) return;
   const [, userIdRaw, amountRaw, ...noteParts] = ctx.message.text.split(" ");
   const userId = Number(userIdRaw);
   const amount = Number(amountRaw);
@@ -498,7 +568,7 @@ bot.command("deposit", async (ctx) => {
 });
 
 bot.command("approvedeposit", async (ctx) => {
-  if (!ctx.from || !isAdmin(ctx.from.id)) return;
+  if (!(await requireAdminConsole(ctx))) return;
   const [, depositId] = ctx.message.text.split(" ");
   if (!depositId) {
     await ctx.reply("Format: /approvedeposit <depositId>");
@@ -514,7 +584,7 @@ bot.command("approvedeposit", async (ctx) => {
 });
 
 bot.command("rejectdeposit", async (ctx) => {
-  if (!ctx.from || !isAdmin(ctx.from.id)) return;
+  if (!(await requireAdminConsole(ctx))) return;
   const [, depositId, ...reasonParts] = ctx.message.text.split(" ");
   const reason = reasonParts.join(" ").trim() || "Rejected by admin";
   if (!depositId) {
@@ -531,7 +601,7 @@ bot.command("rejectdeposit", async (ctx) => {
 });
 
 bot.command("approve", async (ctx) => {
-  if (!ctx.from || !isAdmin(ctx.from.id)) return;
+  if (!(await requireAdminConsole(ctx))) return;
   const [, submissionId] = ctx.message.text.split(" ");
   if (!submissionId) {
     await ctx.reply("Format: /approve <submissionId>");
@@ -547,7 +617,7 @@ bot.command("approve", async (ctx) => {
 });
 
 bot.command("reject", async (ctx) => {
-  if (!ctx.from || !isAdmin(ctx.from.id)) return;
+  if (!(await requireAdminConsole(ctx))) return;
   const [, submissionId, ...reasonParts] = ctx.message.text.split(" ");
   const reason = reasonParts.join(" ").trim();
   if (!submissionId || !reason) {
@@ -564,7 +634,7 @@ bot.command("reject", async (ctx) => {
 });
 
 bot.command("paywithdraw", async (ctx) => {
-  if (!ctx.from || !isAdmin(ctx.from.id)) return;
+  if (!(await requireAdminConsole(ctx))) return;
   const [, withdrawalId] = ctx.message.text.split(" ");
   if (!withdrawalId) {
     await ctx.reply("Format: /paywithdraw <withdrawalId>");
@@ -582,7 +652,7 @@ bot.command("paywithdraw", async (ctx) => {
 });
 
 bot.command("rejectwithdraw", async (ctx) => {
-  if (!ctx.from || !isAdmin(ctx.from.id)) return;
+  if (!(await requireAdminConsole(ctx))) return;
   const [, withdrawalId, ...reasonParts] = ctx.message.text.split(" ");
   const reason = reasonParts.join(" ").trim();
   if (!withdrawalId || !reason) {
@@ -601,7 +671,7 @@ bot.command("rejectwithdraw", async (ctx) => {
 });
 
 bot.command("paywd", async (ctx) => {
-  if (!ctx.from || !isAdmin(ctx.from.id)) return;
+  if (!(await requireAdminConsole(ctx))) return;
   const [, withdrawalId] = ctx.message.text.split(" ");
   if (!withdrawalId) {
     await ctx.reply("Format: /paywd <withdrawalId>");
@@ -619,7 +689,7 @@ bot.command("paywd", async (ctx) => {
 });
 
 bot.command("rejectwd", async (ctx) => {
-  if (!ctx.from || !isAdmin(ctx.from.id)) return;
+  if (!(await requireAdminConsole(ctx))) return;
   const [, withdrawalId, ...reasonParts] = ctx.message.text.split(" ");
   const reason = reasonParts.join(" ").trim();
   if (!withdrawalId || !reason) {
@@ -874,6 +944,98 @@ bot.action("noop", async (ctx) => {
   await ctx.answerCbQuery();
 });
 
+bot.action("admin:dashboard", async (ctx) => {
+  if (!(await requireAdminPanelCallback(ctx))) return;
+  await ctx.answerCbQuery();
+  await showScreen(ctx, formatAdminDashboard(), adminDashboardKeyboard());
+});
+
+bot.action("admin:pending", async (ctx) => {
+  if (!(await requireAdminPanelCallback(ctx))) return;
+  await ctx.answerCbQuery();
+  await showScreen(ctx, formatAdminPending(), adminDashboardKeyboard());
+});
+
+bot.action("admin:stats", async (ctx) => {
+  if (!(await requireAdminPanelCallback(ctx))) return;
+  await ctx.answerCbQuery();
+  await showScreen(ctx, formatAdminStats(), adminDashboardKeyboard());
+});
+
+bot.action("admin:withdrawals", async (ctx) => {
+  if (!(await requireAdminPanelCallback(ctx))) return;
+  await ctx.answerCbQuery();
+  await showScreen(ctx, formatAdminWithdrawalList(), adminWithdrawalListKeyboard());
+});
+
+bot.action(/^admin:withdraw:view:(.+)$/, async (ctx) => {
+  if (!(await requireAdminPanelCallback(ctx))) return;
+  const withdrawal = store.snapshot().withdrawals.find((item) => item.id === ctx.match[1]);
+  if (!withdrawal) {
+    await ctx.answerCbQuery("Withdrawal not found.", { show_alert: true });
+    return;
+  }
+  await ctx.answerCbQuery();
+  await showScreen(ctx, formatWithdrawalPanelCard(withdrawal, "group"), adminWithdrawalKeyboard(withdrawal));
+});
+
+bot.action("admin:deposits", async (ctx) => {
+  if (!(await requireAdminPanelCallback(ctx))) return;
+  await ctx.answerCbQuery();
+  await showScreen(ctx, formatAdminDepositList(), adminDepositListKeyboard());
+});
+
+bot.action("admin:submissions", async (ctx) => {
+  if (!(await requireAdminPanelCallback(ctx))) return;
+  await ctx.answerCbQuery();
+  const pendingSubmissions = store.snapshot().submissions.filter((item) => item.status === "pending");
+  await showScreen(ctx, formatPendingSubmissions(pendingSubmissions), buyerSubmissionKeyboard(pendingSubmissions));
+});
+
+bot.action("admin:disputes", async (ctx) => {
+  if (!(await requireAdminPanelCallback(ctx))) return;
+  await ctx.answerCbQuery();
+  await showScreen(ctx, formatOpenDisputes(), disputeListKeyboard(store.snapshot().disputes.filter((item) => item.status === "open")));
+});
+
+bot.action("admin:tickets", async (ctx) => {
+  if (!(await requireAdminPanelCallback(ctx))) return;
+  await ctx.answerCbQuery();
+  await showScreen(ctx, formatOpenTickets(), adminDashboardKeyboard());
+});
+
+bot.action("admin:users", async (ctx) => {
+  if (!(await requireAdminPanelCallback(ctx))) return;
+  await ctx.answerCbQuery();
+  await showScreen(ctx, [
+    "👤 User Lookup",
+    "",
+    "Use:",
+    "<code>/user 7020461098</code>",
+    "<code>/ban 7020461098 reason</code>",
+    "<code>/unban 7020461098</code>"
+  ].join("\n"), taskHtmlExtra(adminDashboardKeyboard()));
+});
+
+bot.action("admin:settings", async (ctx) => {
+  if (!(await requireAdminPanelCallback(ctx))) return;
+  await ctx.answerCbQuery();
+  await showScreen(ctx, formatAdminSettings(), adminDashboardKeyboard());
+});
+
+bot.action("admin:help", async (ctx) => {
+  if (!(await requireAdminPanelCallback(ctx))) return;
+  await ctx.answerCbQuery();
+  await showScreen(ctx, formatAdminHelp(), adminDashboardKeyboard());
+});
+
+bot.action("admin:refresh", async (ctx) => {
+  if (!(await requireAdminPanelCallback(ctx))) return;
+  const count = await refreshAdminPanelMessages();
+  await ctx.answerCbQuery("Panel synced.");
+  await showScreen(ctx, `🔄 Panel synced\n\nPending withdrawals refreshed: ${count}`, adminDashboardKeyboard());
+});
+
 bot.on("channel_post", async (ctx) => {
   const post = (ctx as unknown as { channelPost?: { chat: { id: number }; text?: string } }).channelPost;
   const text = post?.text?.trim();
@@ -885,11 +1047,8 @@ bot.on("channel_post", async (ctx) => {
   }
 
   if (config.adminPanelChannelId && post.chat.id === config.adminPanelChannelId && (text === "/refresh" || text.startsWith("/refresh@"))) {
-    const pendingWithdrawals = store.snapshot().withdrawals.filter((withdrawal) => withdrawal.status === "pending");
-    for (const withdrawal of pendingWithdrawals) {
-      await syncWithdrawalPanelMessages(withdrawal.id);
-    }
-    await ctx.telegram.sendMessage(post.chat.id, `Panel refreshed. Pending withdrawals: ${pendingWithdrawals.length}`);
+    const count = await refreshAdminPanelMessages();
+    await ctx.telegram.sendMessage(post.chat.id, `Panel refreshed. Pending withdrawals: ${count}`);
   }
 });
 
@@ -1220,7 +1379,7 @@ bot.action(/^submission:reject:(.+)$/, async (ctx) => {
 
 bot.action(/^withdrawal:pay:(.+)$/, async (ctx) => {
   await ctx.answerCbQuery();
-  if (!isAdmin(ctx.from.id)) {
+  if (!isAdminPanelCallbackContext(ctx)) {
     await ctx.reply("Admin permission required.");
     return;
   }
@@ -1237,7 +1396,7 @@ bot.action(/^withdrawal:pay:(.+)$/, async (ctx) => {
 
 bot.action(/^deposit:approve:(.+)$/, async (ctx) => {
   await ctx.answerCbQuery();
-  if (!isAdmin(ctx.from.id)) {
+  if (!isAdminPanelCallbackContext(ctx)) {
     await ctx.reply("Admin permission required.");
     return;
   }
@@ -1252,7 +1411,7 @@ bot.action(/^deposit:approve:(.+)$/, async (ctx) => {
 
 bot.action(/^deposit:reject:(.+)$/, async (ctx) => {
   await ctx.answerCbQuery();
-  if (!isAdmin(ctx.from.id)) {
+  if (!isAdminPanelCallbackContext(ctx)) {
     await ctx.reply("Admin permission required.");
     return;
   }
@@ -1267,7 +1426,7 @@ bot.action(/^deposit:reject:(.+)$/, async (ctx) => {
 
 bot.action(/^dispute:pay:(.+)$/, async (ctx) => {
   await ctx.answerCbQuery();
-  if (!isAdmin(ctx.from.id)) {
+  if (!isAdminPanelCallbackContext(ctx)) {
     await ctx.reply("Admin permission required.");
     return;
   }
@@ -1282,7 +1441,7 @@ bot.action(/^dispute:pay:(.+)$/, async (ctx) => {
 
 bot.action(/^dispute:uphold:(.+)$/, async (ctx) => {
   await ctx.answerCbQuery();
-  if (!isAdmin(ctx.from.id)) {
+  if (!isAdminPanelCallbackContext(ctx)) {
     await ctx.reply("Admin permission required.");
     return;
   }
@@ -1297,7 +1456,7 @@ bot.action(/^dispute:uphold:(.+)$/, async (ctx) => {
 
 bot.action(/^withdrawal:reject:(.+)$/, async (ctx) => {
   await ctx.answerCbQuery();
-  if (!isAdmin(ctx.from.id)) {
+  if (!isAdminPanelCallbackContext(ctx)) {
     await ctx.reply("Admin permission required.");
     return;
   }
@@ -1313,10 +1472,7 @@ bot.action(/^withdrawal:reject:(.+)$/, async (ctx) => {
 });
 
 bot.action(/^admin:withdraw:pay:(.+)$/, async (ctx) => {
-  if (!isAdmin(ctx.from.id)) {
-    await ctx.answerCbQuery("Admin permission required.", { show_alert: true });
-    return;
-  }
+  if (!(await requireAdminPanelCallback(ctx))) return;
 
   try {
     const withdrawal = await payWithdrawalById(ctx.match[1]);
@@ -1329,10 +1485,7 @@ bot.action(/^admin:withdraw:pay:(.+)$/, async (ctx) => {
 });
 
 bot.action(/^admin:withdraw:reject_menu:(.+)$/, async (ctx) => {
-  if (!isAdmin(ctx.from.id)) {
-    await ctx.answerCbQuery("Admin permission required.", { show_alert: true });
-    return;
-  }
+  if (!(await requireAdminPanelCallback(ctx))) return;
 
   const withdrawal = store.snapshot().withdrawals.find((item) => item.id === ctx.match[1]);
   if (!withdrawal) {
@@ -1345,10 +1498,7 @@ bot.action(/^admin:withdraw:reject_menu:(.+)$/, async (ctx) => {
 });
 
 bot.action(/^admin:withdraw:reject:(.+):(wrong_account|suspicious|duplicate|user_request)$/, async (ctx) => {
-  if (!isAdmin(ctx.from.id)) {
-    await ctx.answerCbQuery("Admin permission required.", { show_alert: true });
-    return;
-  }
+  if (!(await requireAdminPanelCallback(ctx))) return;
 
   const reason = withdrawalPresetRejectReason(ctx.match[2]);
   try {
@@ -1362,20 +1512,14 @@ bot.action(/^admin:withdraw:reject:(.+):(wrong_account|suspicious|duplicate|user
 });
 
 bot.action(/^admin:withdraw:custom:(.+)$/, async (ctx) => {
-  if (!isAdmin(ctx.from.id)) {
-    await ctx.answerCbQuery("Admin permission required.", { show_alert: true });
-    return;
-  }
+  if (!(await requireAdminPanelCallback(ctx))) return;
 
   const command = `/rejectwd ${ctx.match[1]} <reason>`;
   await ctx.answerCbQuery(`Use console group: ${command}`, { show_alert: true });
 });
 
 bot.action(/^admin:withdraw:back:(.+)$/, async (ctx) => {
-  if (!isAdmin(ctx.from.id)) {
-    await ctx.answerCbQuery("Admin permission required.", { show_alert: true });
-    return;
-  }
+  if (!(await requireAdminPanelCallback(ctx))) return;
 
   const withdrawal = store.snapshot().withdrawals.find((item) => item.id === ctx.match[1]);
   if (!withdrawal) {
@@ -1388,20 +1532,14 @@ bot.action(/^admin:withdraw:back:(.+)$/, async (ctx) => {
 });
 
 bot.action(/^admin:withdraw:user:(\d+)$/, async (ctx) => {
-  if (!isAdmin(ctx.from.id)) {
-    await ctx.answerCbQuery("Admin permission required.", { show_alert: true });
-    return;
-  }
+  if (!(await requireAdminPanelCallback(ctx))) return;
 
   await ctx.answerCbQuery();
   await ctx.reply(formatUserLookup(Number(ctx.match[1])));
 });
 
 bot.action(/^admin:withdraw:history:(\d+)$/, async (ctx) => {
-  if (!isAdmin(ctx.from.id)) {
-    await ctx.answerCbQuery("Admin permission required.", { show_alert: true });
-    return;
-  }
+  if (!(await requireAdminPanelCallback(ctx))) return;
 
   await ctx.answerCbQuery();
   await ctx.reply(formatAdminWithdrawalHistory(Number(ctx.match[1])));
@@ -1511,6 +1649,14 @@ bot.on("message", async (ctx, next) => {
     return;
   }
 
+  const messageText = extractText(ctx.message);
+  if (messageText?.startsWith("/")) {
+    await ctx.reply(isAdminConsoleCommandContext(ctx)
+      ? "I did not understand this admin command.\n\nUse /help to see all admin commands."
+      : "I did not understand this command.\n\nUse /start or the buttons to continue.");
+    return;
+  }
+
   const taskId = proofWaiters.get(ctx.from.id);
   if (!taskId) return next();
 
@@ -1544,6 +1690,47 @@ async function ensureUser(from: TelegramFrom) {
 function userMessages(userId: number) {
   const user = store.snapshot().users.find((item) => item.id === userId);
   return getMessages(user?.language);
+}
+
+function adminUnknownCommandText(): string {
+  return "I did not understand this command.\n\nAdmin actions are available only inside the configured admin console group.";
+}
+
+function isAdminConsoleCommandContext(ctx: Context): boolean {
+  return Boolean(
+    ctx.from &&
+    isAdmin(ctx.from.id) &&
+    config.adminConsoleGroupId &&
+    ctx.chat?.id === config.adminConsoleGroupId
+  );
+}
+
+async function requireAdminConsole(ctx: Context): Promise<boolean> {
+  if (isAdminConsoleCommandContext(ctx)) return true;
+  if (ctx.from) {
+    await ctx.reply(isAdmin(ctx.from.id)
+      ? adminUnknownCommandText()
+      : "I did not understand this command.\n\nUse /start or the buttons to continue.");
+  }
+  return false;
+}
+
+function isAdminPanelCallbackContext(ctx: Context): boolean {
+  const messageChatId = (ctx.callbackQuery?.message as { chat?: { id?: number } } | undefined)?.chat?.id;
+  return Boolean(
+    ctx.from &&
+    isAdmin(ctx.from.id) &&
+    (
+      (config.adminConsoleGroupId && messageChatId === config.adminConsoleGroupId) ||
+      (config.adminPanelChannelId && messageChatId === config.adminPanelChannelId)
+    )
+  );
+}
+
+async function requireAdminPanelCallback(ctx: Context): Promise<boolean> {
+  if (isAdminPanelCallbackContext(ctx)) return true;
+  await ctx.answerCbQuery("Admin panel access required.", { show_alert: true });
+  return false;
 }
 
 async function showScreen(ctx: Context, text: string, extra?: ReplyMarkup) {
@@ -3278,6 +3465,189 @@ function extractText(message: unknown): string | undefined {
   return textMessage.text?.trim();
 }
 
+function adminDashboardCounts() {
+  const state = store.snapshot();
+  return {
+    users: state.users.length,
+    tasks: state.tasks.length,
+    activeTasks: state.tasks.filter((item) => item.status === "active").length,
+    pendingWithdrawals: state.withdrawals.filter((item) => item.status === "pending").length,
+    pendingDeposits: state.deposits.filter((item) => item.status === "pending").length,
+    pendingSubmissions: state.submissions.filter((item) => item.status === "pending").length,
+    openDisputes: state.disputes.filter((item) => item.status === "open").length,
+    openTickets: state.supportTickets.filter((item) => item.status === "open").length
+  };
+}
+
+function formatAdminDashboard(): string {
+  const counts = adminDashboardCounts();
+  return [
+    "🛠️ Neosence Admin Panel",
+    "",
+    "📊 Live Summary",
+    `Users: ${counts.users}`,
+    `Tasks: ${counts.tasks} (${counts.activeTasks} active)`,
+    "",
+    "⏳ Pending",
+    `Withdrawals: ${counts.pendingWithdrawals}`,
+    `Deposits: ${counts.pendingDeposits}`,
+    `Manual proofs: ${counts.pendingSubmissions}`,
+    `Disputes: ${counts.openDisputes}`,
+    `Tickets: ${counts.openTickets}`,
+    "",
+    "Choose an area below, or use /help for commands."
+  ].join("\n");
+}
+
+function adminDashboardKeyboard() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("⏳ Pending", "admin:pending"), Markup.button.callback("📊 Stats", "admin:stats")],
+    [Markup.button.callback("🏦 Withdrawals", "admin:withdrawals"), Markup.button.callback("💰 Deposits", "admin:deposits")],
+    [Markup.button.callback("📌 Submissions", "admin:submissions"), Markup.button.callback("⚖️ Disputes", "admin:disputes")],
+    [Markup.button.callback("🎧 Tickets", "admin:tickets"), Markup.button.callback("👤 Users", "admin:users")],
+    [Markup.button.callback("⚙️ Settings", "admin:settings"), Markup.button.callback("❔ Help", "admin:help")],
+    [Markup.button.callback("🔄 Refresh Panel", "admin:refresh")]
+  ]);
+}
+
+function formatAdminStats(): string {
+  const state = store.snapshot();
+  const walletVolume = state.walletTransactions
+    .filter((item) => item.status === "completed")
+    .reduce((sum, item) => sum + Math.abs(item.amount), 0);
+  const completedSubmissions = state.submissions.filter((item) => item.status === "approved" || item.status === "auto_approved").length;
+  const rejectedSubmissions = state.submissions.filter((item) => item.status === "rejected").length;
+
+  return [
+    "📊 Platform Stats",
+    "",
+    `Users: ${state.users.length}`,
+    `Tasks: ${state.tasks.length}`,
+    `Active tasks: ${state.tasks.filter((item) => item.status === "active").length}`,
+    `Submissions: ${state.submissions.length}`,
+    `Approved/auto: ${completedSubmissions}`,
+    `Rejected: ${rejectedSubmissions}`,
+    `Wallet transactions: ${state.walletTransactions.length}`,
+    `Completed volume: ${formatMoneyDetail(walletVolume, "en")}`
+  ].join("\n");
+}
+
+function formatAdminPending(): string {
+  const counts = adminDashboardCounts();
+  return [
+    "⏳ Pending Review",
+    "",
+    `🏦 Withdrawals: ${counts.pendingWithdrawals}`,
+    `💰 Deposits: ${counts.pendingDeposits}`,
+    `📌 Manual proofs: ${counts.pendingSubmissions}`,
+    `⚖️ Disputes: ${counts.openDisputes}`,
+    `🎧 Tickets: ${counts.openTickets}`,
+    "",
+    "Use the buttons below to open each queue."
+  ].join("\n");
+}
+
+function formatAdminWithdrawalList(): string {
+  const withdrawals = store.snapshot().withdrawals.filter((item) => item.status === "pending");
+  if (withdrawals.length === 0) return "🏦 Withdrawals\n\nNo pending withdrawals.";
+
+  return [
+    `🏦 Pending Withdrawals (${withdrawals.length})`,
+    "",
+    ...withdrawals.slice(0, 10).map((withdrawal) => [
+      `${shortId(withdrawal.id)} • ${formatMoneyDetail(withdrawal.amount, "en")}`,
+      `User: ${withdrawal.userId}`,
+      `Method: ${withdrawal.method}`
+    ].join("\n"))
+  ].join("\n\n");
+}
+
+function adminWithdrawalListKeyboard() {
+  const withdrawals = store.snapshot().withdrawals.filter((item) => item.status === "pending").slice(0, 10);
+  const rows = withdrawals.map((withdrawal) => [
+    Markup.button.callback(`🏦 ${shortId(withdrawal.id)} • ${formatMoney(withdrawal.amount, "en")}`, `admin:withdraw:view:${withdrawal.id}`)
+  ]);
+  rows.push([Markup.button.callback("⬅️ Dashboard", "admin:dashboard")]);
+  return Markup.inlineKeyboard(rows);
+}
+
+function formatAdminDepositList(): string {
+  const deposits = store.snapshot().deposits.filter((item) => item.status === "pending");
+  if (deposits.length === 0) return "💰 Deposits\n\nNo pending deposits.";
+
+  return [
+    `💰 Pending Deposits (${deposits.length})`,
+    "",
+    ...deposits.slice(0, 10).map((deposit) => [
+      `${shortId(deposit.id)} • ${formatMoneyDetail(deposit.amount, "en")}`,
+      `User: ${deposit.userId}`,
+      `Method: ${deposit.method}`,
+      deposit.proof ? `Proof: ${deposit.proof}` : undefined
+    ].filter(Boolean).join("\n"))
+  ].join("\n\n");
+}
+
+function adminDepositListKeyboard() {
+  const deposits = store.snapshot().deposits.filter((item) => item.status === "pending").slice(0, 8);
+  const rows = deposits.map((deposit) => [
+    Markup.button.callback(`✅ ${shortId(deposit.id)}`, `deposit:approve:${deposit.id}`),
+    Markup.button.callback(`❌ ${shortId(deposit.id)}`, `deposit:reject:${deposit.id}`)
+  ]);
+  rows.push([Markup.button.callback("⬅️ Dashboard", "admin:dashboard")]);
+  return Markup.inlineKeyboard(rows);
+}
+
+function formatPendingSubmissions(submissions: Submission[]): string {
+  if (submissions.length === 0) return "📌 Manual Proofs\n\nNo pending manual submissions.";
+
+  return [
+    `📌 Pending Manual Proofs (${submissions.length})`,
+    "",
+    ...submissions.slice(0, 10).map((submission) => [
+      `${shortId(submission.id)} • ${formatMoneyDetail(submission.rewardAmount, "en")}`,
+      `Task: ${submission.taskId}`,
+      `Worker: ${submission.workerId}`
+    ].join("\n"))
+  ].join("\n\n");
+}
+
+function formatAdminSettings(): string {
+  return [
+    "⚙️ System Settings",
+    "",
+    `Panel channel: ${config.adminPanelChannelId ? config.adminPanelChannelId : "not configured"}`,
+    `Console group: ${config.adminConsoleGroupId ? config.adminConsoleGroupId : "not configured"}`,
+    `Platform fee: ${config.platformFeePercent}%`,
+    `Withdraw hold: ${config.autoWithdrawHoldHours}h`,
+    `USD rate: 1 USD = ${config.usdToBdt} BDT`,
+    `Storage: ${config.databaseUrl ? "PostgreSQL" : "local JSON"}`
+  ].join("\n");
+}
+
+function formatAdminAudit(): string {
+  const recent = store.snapshot().walletTransactions.slice(-10).reverse();
+  if (recent.length === 0) return "🧾 Audit\n\nNo activity yet.";
+
+  return [
+    "🧾 Recent Ledger Activity",
+    "",
+    ...recent.map((item) => [
+      `${item.type} • ${formatMoneyDetail(item.amount, "en")}`,
+      `User: ${item.userId}`,
+      item.taskId ? `Task: ${item.taskId}` : undefined,
+      item.note ? `Note: ${item.note}` : undefined
+    ].filter(Boolean).join("\n"))
+  ].join("\n\n");
+}
+
+function formatAdminHelp(): string {
+  return [
+    "❔ Admin Command Guide",
+    "",
+    ...ADMIN_CONSOLE_COMMANDS.map((item) => `/${item.command} - ${item.description}`)
+  ].join("\n");
+}
+
 function adminReviewKeyboard(deposits: DepositRequest[], disputes: Dispute[], submissions: Submission[], withdrawals: Withdrawal[]) {
   const rows = [
     ...deposits.slice(0, 5).map((deposit) => [
@@ -3358,6 +3728,14 @@ async function syncWithdrawalPanelMessages(withdrawalId: string) {
   for (const message of messages) {
     await editWithdrawalPanelMessage(message, withdrawal);
   }
+}
+
+async function refreshAdminPanelMessages(): Promise<number> {
+  const pendingWithdrawals = store.snapshot().withdrawals.filter((withdrawal) => withdrawal.status === "pending");
+  for (const withdrawal of pendingWithdrawals) {
+    await syncWithdrawalPanelMessages(withdrawal.id);
+  }
+  return pendingWithdrawals.length;
 }
 
 async function editWithdrawalPanelMessage(message: AdminPanelMessage, withdrawal: Withdrawal) {
@@ -4570,6 +4948,7 @@ bot.catch((error) => {
 
 try {
   await bot.telegram.getMe();
+  await configureTelegramCommands();
   if (shouldUseWebhook()) {
     telegramWebhookCallback = bot.webhookCallback(telegramWebhookPath);
     await bot.telegram.setWebhook(new URL(telegramWebhookPath, publicBaseUrl()).toString(), {
@@ -4605,4 +4984,22 @@ process.once("SIGTERM", () => {
 
 function shouldUseWebhook(): boolean {
   return !publicBaseUrl().startsWith("http://localhost");
+}
+
+async function configureTelegramCommands() {
+  try {
+    await bot.telegram.setMyCommands(PUBLIC_BOT_COMMANDS);
+    if (config.adminConsoleGroupId) {
+      await bot.telegram.setMyCommands(ADMIN_CONSOLE_COMMANDS, {
+        scope: { type: "chat", chat_id: config.adminConsoleGroupId }
+      });
+    }
+    if (config.adminPanelChannelId) {
+      await bot.telegram.setMyCommands(ADMIN_PANEL_CHANNEL_COMMANDS, {
+        scope: { type: "chat", chat_id: config.adminPanelChannelId }
+      });
+    }
+  } catch (error) {
+    console.warn("Failed to configure Telegram commands", error instanceof Error ? error.message : error);
+  }
 }
