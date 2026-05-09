@@ -1446,7 +1446,8 @@ function walletLabels(language?: "en" | "bn") {
       withdrawSubmitted: "✅ উইথড্র রিকোয়েস্ট জমা হয়েছে",
       noWithdrawals: "এখনও কোনো উইথড্র নেই।",
       depositHelp: "ডিপোজিট করতে /depositreq কমান্ড ব্যবহার করুন।\n\nফরম্যাট:\n/depositreq 500 bkash trxid-or-proof-note",
-      escrowInsufficient: "টাস্ক পাবলিশ করার মতো withdrawable balance নেই। Hold/Pending ব্যালেন্স ব্যবহার করা যাবে না।"
+      escrowInsufficient: "টাস্ক পাবলিশ করার মতো withdrawable balance নেই। Hold/Pending ব্যালেন্স ব্যবহার করা যাবে না।",
+      hint: "পেন্ডিং/হোল্ড ব্যালেন্স খরচ বা উইথড্র করা যাবে না।"
     };
   }
 
@@ -1478,7 +1479,8 @@ function walletLabels(language?: "en" | "bn") {
     withdrawSubmitted: "✅ Withdrawal request submitted",
     noWithdrawals: "No withdrawals yet.",
     depositHelp: "Use /depositreq to request a deposit.\n\nFormat:\n/depositreq 500 bkash trxid-or-proof-note",
-    escrowInsufficient: "Not enough withdrawable balance to publish this task. Hold/pending balance cannot be used."
+    escrowInsufficient: "Not enough withdrawable balance to publish this task. Hold/pending balance cannot be used.",
+    hint: "Pending/Hold balance cannot be withdrawn or spent."
   };
 }
 
@@ -1541,19 +1543,28 @@ function formatWallet(userId: number, mode: "freelancer" | "buyer", language?: "
   const wallet = walletSummary(store.snapshot(), userId);
   const hold = Math.max(wallet.available - wallet.withdrawable, 0);
   const payout = user?.payoutMethod ? formatSavedPayout(user.payoutMethod.type, user.payoutMethod.account) : labels.notSet;
-  const common = [
-    `${messages.wallet.available} ${formatMoney(wallet.available, language)}`,
-    `${messages.wallet.withdrawable} ${formatMoney(wallet.withdrawable, language)}`,
-    `${messages.wallet.pending} ${formatMoney(wallet.pending, language)}`,
-    `${messages.wallet.autoHold} ${formatMoney(hold, language)}`,
-    `${messages.wallet.escrowLocked} ${formatMoney(wallet.escrow, language)}`,
-    `${labels.payout}: ${payout}`
-  ];
 
   return [
     mode === "buyer" ? messages.wallet.buyerTitle : messages.wallet.freelancerTitle,
-    ...common
+    "",
+    labelWithoutColon(messages.wallet.available),
+    formatMoney(wallet.available, language),
+    "",
+    labelWithoutColon(messages.wallet.withdrawable),
+    formatMoney(wallet.withdrawable, language),
+    "",
+    `${messages.wallet.pending} ${formatMoney(wallet.pending, language)}`,
+    `${messages.wallet.autoHold} ${formatMoney(hold, language)}`,
+    `${messages.wallet.escrowLocked} ${formatMoney(wallet.escrow, language)}`,
+    "",
+    `${labels.payout}: ${payout}`,
+    "",
+    labels.hint
   ].join("\n");
+}
+
+function labelWithoutColon(label: string): string {
+  return label.replace(/:$/, "");
 }
 
 function assertEnoughWithdrawableForEscrow(userId: number, requiredEscrow: number, language?: "en" | "bn") {

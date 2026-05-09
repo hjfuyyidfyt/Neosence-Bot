@@ -19,9 +19,8 @@ export function mainMenu(user: UserProfile) {
   return Markup.inlineKeyboard([
     [Markup.button.callback(t.menu.earnMoney, "menu:earn")],
     [Markup.button.callback(t.menu.myJobs, "menu:jobs"), Markup.button.callback(t.menu.wallet, "menu:wallet")],
-    [Markup.button.callback(t.menu.withdraw, "menu:withdraw"), Markup.button.callback(t.menu.freelancerMode, "mode:buyer")],
     [Markup.button.callback(t.menu.referrals, "menu:referrals"), Markup.button.callback(t.menu.profile, "menu:profile")],
-    [Markup.button.callback(t.menu.language, "menu:language")],
+    [Markup.button.callback(t.menu.freelancerMode, "mode:buyer"), Markup.button.callback(t.menu.language, "menu:language")],
     [Markup.button.callback(t.menu.support, "menu:support")]
   ]);
 }
