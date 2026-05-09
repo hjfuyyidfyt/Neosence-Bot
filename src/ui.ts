@@ -34,7 +34,7 @@ export function modeMenu(language?: LanguageCode) {
 }
 
 export function taskButtons(tasks: Task[]) {
-  return Markup.inlineKeyboard(tasks.map((task) => [Markup.button.callback(`${task.title} - ${task.rewardPerWorker} BDT`, `task:${task.id}`)]));
+  return Markup.inlineKeyboard(tasks.map((task) => [Markup.button.callback(`${task.title} - ${formatMoney(task.rewardPerWorker)}`, `task:${task.id}`)]));
 }
 
 export function taskActionButtons(task: Task, language?: LanguageCode) {
@@ -50,37 +50,69 @@ export function formatTask(task: Task, language?: LanguageCode): string {
   const category = messages.categories[task.category as keyof typeof messages.categories] ?? task.category;
   const labels = language === "bn"
     ? {
-      category: "ক্যাটাগরি:",
-      reward: "রিওয়ার্ড:",
-      workers: "ওয়ার্কার:",
-      verification: "ভেরিফিকেশন:",
-      visitTimer: "ভিজিট টাইমার:",
-      instructions: "ইনস্ট্রাকশন:",
-      buyerApproval: "বায়ার/অ্যাডমিন অ্যাপ্রুভাল"
+      reward: "রিওয়ার্ড",
+      workers: "ওয়ার্কার",
+      verify: "ভেরিফাই",
+      visitTimer: "ভিজিট টাইমার",
+      instructions: "ইনস্ট্রাকশন"
     }
     : {
-      category: "Category:",
-      reward: "Reward:",
-      workers: "Workers:",
-      verification: "Verification:",
-      visitTimer: "Visit timer:",
-      instructions: "Instructions:",
-      buyerApproval: "buyer/admin approval"
+      reward: "Reward",
+      workers: "Workers",
+      verify: "Verify",
+      visitTimer: "Visit timer",
+      instructions: "Instructions"
     };
-  const verify = task.approvalType === "auto"
-    ? `\n${labels.verification} ${task.verificationType ?? "auto"}`
-    : `\n${labels.verification} ${labels.buyerApproval}`;
 
   return [
     `💼 ${task.title}`,
     "",
-    `${labels.category} ${category}`,
-    `${labels.reward} ${formatMoney(task.rewardPerWorker, language)}`,
-    `${labels.workers} ${task.completedCount}/${task.workerLimit}`,
-    `${labels.verification} ${task.approvalType}${verify}`,
-    task.websiteVisitSeconds ? `${labels.visitTimer} ${task.websiteVisitSeconds}s` : undefined,
+    `${categoryIcon(task.category)} ${category}`,
+    `💵 ${labels.reward}: ${formatMoney(task.rewardPerWorker, language)}`,
+    `👥 ${labels.workers}: ${task.completedCount}/${task.workerLimit}`,
+    `✅ ${labels.verify}: ${verificationLabel(task, language)}`,
+    task.websiteVisitSeconds ? `⏱ ${labels.visitTimer}: ${task.websiteVisitSeconds}s` : undefined,
     "",
-    labels.instructions,
+    `📌 ${labels.instructions}`,
     task.instructions
   ].filter(Boolean).join("\n");
+}
+
+function categoryIcon(category: string): string {
+  if (category === "telegram") return "📢";
+  if (category === "website") return "🌐";
+  if (category === "app") return "📱";
+  if (category === "social") return "📣";
+  if (category === "survey") return "📝";
+  if (category === "data_entry") return "⌨️";
+  if (category === "review") return "⭐";
+  if (category === "quiz") return "✅";
+  return "⚙️";
+}
+
+function verificationLabel(task: Task, language?: LanguageCode): string {
+  const labels = language === "bn"
+    ? {
+      manual: "ম্যানুয়াল প্রুফ",
+      telegram_join: "টেলিগ্রাম জয়েন",
+      website_visit: "টাইমার ভিজিট",
+      website_webhook: "Webhook/API",
+      app_attribution: "অ্যাপ ট্র্যাকিং",
+      in_app_code: "ইন-অ্যাপ কোড",
+      quiz: "কুইজ/কোড",
+      auto: "অটো ভেরিফাই"
+    }
+    : {
+      manual: "Manual Proof",
+      telegram_join: "Telegram Join",
+      website_visit: "Timer Visit",
+      website_webhook: "Webhook/API",
+      app_attribution: "App Tracking",
+      in_app_code: "In-App Code",
+      quiz: "Quiz/Code",
+      auto: "Auto Verify"
+    };
+
+  if (task.approvalType === "manual") return labels.manual;
+  return labels[task.verificationType as keyof typeof labels] ?? labels.auto;
 }

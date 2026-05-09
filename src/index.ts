@@ -1625,11 +1625,7 @@ function ageHours(value: string): number {
 }
 
 function formatEarnFeedTask(task: Task, category: string, language?: "en" | "bn"): string {
-  return [
-    language === "bn" ? `${categoryLabel(category, language)} টাস্ক` : `${categoryLabel(category, language)} task`,
-    "",
-    formatTask(task, language)
-  ].join("\n");
+  return formatTask(task, language);
 }
 
 function earnFeedKeyboard(task: Task, category: string, messages: MessageBundle = t, user?: { language: "en" | "bn" }) {
@@ -2768,7 +2764,7 @@ function formatSubmissionReview(submissionId: string): string {
     `Status: ${submission.status}`,
     `Task: ${task?.title ?? submission.taskId}`,
     `Worker: ${submission.workerId}`,
-    `Reward: ${submission.rewardAmount} BDT`,
+    `Reward: ${formatMoney(submission.rewardAmount, "en")}`,
     submission.rejectReason ? `Reject reason: ${submission.rejectReason}` : undefined,
     "",
     "Proof:",
@@ -3112,7 +3108,7 @@ function formatCampaignDetail(taskId: string, language?: "en" | "bn"): string {
     `Pending proof: ${pending}`,
     `Approved/auto: ${approved}`,
     `Rejected: ${rejected}`,
-    `Outstanding escrow: ${campaignOutstandingEscrow(task.id)} BDT`
+    `Outstanding escrow: ${formatMoney(campaignOutstandingEscrow(task.id), language)}`
   ].join("\n");
 }
 
