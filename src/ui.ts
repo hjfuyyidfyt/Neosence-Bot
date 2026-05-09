@@ -4,6 +4,12 @@ import { getMessages } from "./messages.js";
 import type { LanguageCode } from "./messages.js";
 import { formatMoney } from "./money.js";
 
+export interface TaskFormatOptions {
+  targetTitle?: string;
+  targetUrl?: string;
+  joinLabel?: string;
+}
+
 export function mainMenu(user: UserProfile) {
   const t = getMessages(user.language);
   if (user.mode === "buyer") {
@@ -45,7 +51,7 @@ export function taskActionButtons(task: Task, language?: LanguageCode) {
   return Markup.inlineKeyboard(buttons);
 }
 
-export function formatTask(task: Task, language?: LanguageCode): string {
+export function formatTask(task: Task, language?: LanguageCode, options: TaskFormatOptions = {}): string {
   const messages = getMessages(language);
   const category = messages.categories[task.category as keyof typeof messages.categories] ?? task.category;
   const labels = language === "bn"
@@ -54,16 +60,18 @@ export function formatTask(task: Task, language?: LanguageCode): string {
       workers: "ওয়ার্কার",
       verify: "ভেরিফাই",
       visitTimer: "ভিজিট টাইমার",
-      instructions: "ইনস্ট্রাকশন"
+      instructions: "ইনস্ট্রাকশন",
+      join: "Join"
     }
     : {
       reward: "Reward",
       workers: "Workers",
       verify: "Verify",
       visitTimer: "Visit timer",
-      instructions: "Instructions"
+      instructions: "Instructions",
+      join: "Join"
     };
-  const target = formatTaskTarget(task, language);
+  const target = formatTaskTarget(task, language, options);
 
   return [
     `💼 ${bold(task.title)}`,
@@ -123,22 +131,32 @@ function verificationLabel(task: Task, language?: LanguageCode): string {
   return labels[task.verificationType as keyof typeof labels] ?? labels.auto;
 }
 
-function formatTaskTarget(task: Task, language?: LanguageCode): string | undefined {
-  if (!task.verificationTarget) return undefined;
-  const label = task.category === "website"
-    ? (language === "bn" ? "লিংক" : "Link")
-    : (language === "bn" ? "টার্গেট" : "Target");
-  const icon = task.category === "website" ? "🔗" : "🎯";
-  return ["", `${icon} ${bold(label)}`, escapeHtml(task.verificationTarget)].join("\n");
+function formatTaskTarget(task: Task, language?: LanguageCode, options: TaskFormatOptions = {}): string | undefined {
+  const value = options.targetTitle ?? task.verificationTargetTitle ?? task.verificationTarget;
+  if (!value) return undefined;
+
+  const label = task.category === "telegram"
+    ? "Telegram"
+    : (task.category === "website" ? "Website" : (language === "bn" ? "টার্গেট" : "Target"));
+  const icon = categoryIcon(task.category);
+  const suffix = options.targetUrl
+    ? ` (${htmlLink(options.joinLabel ?? "Join", options.targetUrl)})`
+    : "";
+  return `${icon} ${bold(`${label}:`)} ${escapeHtml(value)}${suffix}`;
 }
 
 function bold(value: string): string {
   return `<b>${escapeHtml(value)}</b>`;
 }
 
+function htmlLink(label: string, url: string): string {
+  return `<a href="${escapeHtml(url)}">${escapeHtml(label)}</a>`;
+}
+
 function escapeHtml(value: string): string {
   return value
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }

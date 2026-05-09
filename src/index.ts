@@ -27,7 +27,22 @@ import { formatTask, mainMenu, modeMenu, taskActionButtons, taskHtmlExtra } from
 import { getMessages, t } from "./messages.js";
 import { formatMoney, formatMoneyDetail, roundMoney } from "./money.js";
 import type { MessageBundle } from "./messages.js";
-import type { ApiVerificationPayload, DepositRequest, Dispute, PayoutMethodType, Submission, Task, TaskApprovalType, TaskStatus, TrackedChat, VerificationType, Withdrawal } from "./types.js";
+import type {
+  ApiVerificationPayload,
+  DepositRequest,
+  Dispute,
+  PayoutMethodType,
+  Submission,
+  Task,
+  TaskApprovalType,
+  TaskStatus,
+  TelegramInviteLinkRecord,
+  TelegramMembershipRecord,
+  TrackedChat,
+  UserProfile,
+  VerificationType,
+  Withdrawal
+} from "./types.js";
 
 const store = createStore({ databaseUrl: config.databaseUrl, dataFile: config.dataFile });
 const telegramWebhookPath = "/telegram/webhook";
@@ -83,12 +98,15 @@ interface TaskDraft {
 const taskDrafts = new Map<number, TaskDraft>();
 const DRAFT_TTL_MS = 60 * 60 * 1000;
 const VERIFY_COOLDOWN_MS = 15 * 1000;
+const TELEGRAM_INVITE_LINK_TTL_MS = 30 * 60 * 1000;
+const TELEGRAM_ALLOWED_UPDATES = ["message", "callback_query", "my_chat_member", "chat_member"] as const;
 const verifyCooldowns = new Map<string, number>();
 const ACTIVE_TASK_CATEGORIES = new Set(["telegram", "website"]);
 const MIN_REWARD_USD: Record<string, number> = {
   telegram: 0.01,
   website: 0.034
 };
+const localId = (prefix: string) => `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 const botRuntime = {
   launchState: "starting" as "starting" | "running" | "stopped" | "failed",
   lastError: undefined as string | undefined
@@ -203,7 +221,7 @@ bot.command("posttask", async (ctx) => {
     return;
   }
 
-  const task = createTask({
+  const task = withTaskTargetMetadata(createTask({
     buyerId: user.id,
     title,
     category,
@@ -214,7 +232,7 @@ bot.command("posttask", async (ctx) => {
     verificationType: verificationRaw as VerificationType | undefined,
     verificationTarget: target,
     websiteVisitSeconds: verificationRaw === "website_visit" ? 30 : undefined
-  });
+  }));
   try {
     assertCampaignTargetAllowed(task);
     assertEnoughWithdrawableForEscrow(user.id, escrowRequired(task), user.language);
@@ -810,16 +828,24 @@ bot.on("my_chat_member", async (ctx) => {
   const update = ctx.myChatMember;
   const chat = update.chat;
   const status = update.new_chat_member.status;
+  const newChatMember = update.new_chat_member as { status: string; can_invite_users?: boolean };
+  const canVerifyMembers = status === "administrator" || status === "creator";
+  const canInviteUsers = status === "creator" || (status === "administrator" && newChatMember.can_invite_users !== false);
   const trackedChat: TrackedChat = {
     id: chat.id,
     title: "title" in chat ? chat.title : undefined,
     type: chat.type as TrackedChat["type"],
     botStatus: status,
-    canVerifyMembers: status === "administrator" || status === "creator",
+    canVerifyMembers,
+    canInviteUsers: canVerifyMembers && canInviteUsers,
     updatedAt: new Date().toISOString()
   };
   await store.upsertTrackedChat(trackedChat);
   await notifyWaitingDraftsForChat(trackedChat);
+});
+
+bot.on("chat_member", async (ctx) => {
+  await handleTelegramMembershipUpdate(ctx);
 });
 
 bot.action(/^mode:(freelancer|buyer)$/, async (ctx) => {
@@ -992,7 +1018,7 @@ bot.action("wizard:confirm", async (ctx) => {
     return;
   }
 
-  const task = createTask({
+  const task = withTaskTargetMetadata(createTask({
     buyerId: user.id,
     title: draft.title,
     category: draft.category,
@@ -1003,7 +1029,7 @@ bot.action("wizard:confirm", async (ctx) => {
     verificationType: draft.verificationType,
     verificationTarget: draft.verificationTarget,
     websiteVisitSeconds: draft.websiteVisitSeconds
-  });
+  }));
   try {
     assertCampaignTargetAllowed(task);
     assertEnoughWithdrawableForEscrow(user.id, escrowRequired(task), user.language);
@@ -1222,7 +1248,7 @@ bot.action(/^task:(.+)$/, async (ctx) => {
     return;
   }
   const user = await ensureUser(ctx.from);
-  await showScreen(ctx, formatTask(task, user.language), taskHtmlExtra(taskActionButtons(task, user.language)));
+  await showScreen(ctx, await formatTaskForUser(ctx, task, user), taskHtmlExtra(taskActionButtons(task, user.language)));
 });
 
 bot.action(/^proof:(.+)$/, async (ctx) => {
@@ -1533,7 +1559,8 @@ async function showEarnCategory(ctx: Context & { from: TelegramFrom }, category:
   }
 
   const task = rankEarnTasks(filtered)[0];
-  await showScreen(ctx, formatEarnFeedTask(task, category, user?.language), taskHtmlExtra(earnFeedKeyboard(task, category, messages, user)));
+  const text = user ? await formatTaskForUser(ctx, task, user) : formatEarnFeedTask(task, category);
+  await showScreen(ctx, text, taskHtmlExtra(earnFeedKeyboard(task, category, messages, user)));
 }
 
 function formatWallet(userId: number, mode: "freelancer" | "buyer", language?: "en" | "bn"): string {
@@ -1625,7 +1652,159 @@ function ageHours(value: string): number {
 }
 
 function formatEarnFeedTask(task: Task, category: string, language?: "en" | "bn"): string {
-  return formatTask(task, language);
+  return formatTask(withTaskTargetMetadata(task), language);
+}
+
+async function formatTaskForUser(ctx: Context, task: Task, user: UserProfile): Promise<string> {
+  const hydratedTask = withTaskTargetMetadata(task);
+  if (isTelegramJoinTask(hydratedTask) && hydratedTask.buyerId !== user.id) {
+    try {
+      const inviteLink = await ensureTelegramInviteLink(ctx, hydratedTask, user.id);
+      return formatTask(hydratedTask, user.language, {
+        targetTitle: inviteLink.chatTitle ?? telegramTaskTargetTitle(hydratedTask),
+        targetUrl: inviteLink.inviteLink,
+        joinLabel: "Join"
+      });
+    } catch (error) {
+      return [
+        formatTask(hydratedTask, user.language, { targetTitle: telegramTaskTargetTitle(hydratedTask) }),
+        "",
+        user.language === "bn"
+          ? `Join link ready করা যায়নি: ${escapeTelegramHtml((error as Error).message)}`
+          : `Join link could not be prepared: ${escapeTelegramHtml((error as Error).message)}`
+      ].join("\n");
+    }
+  }
+
+  return formatTask(hydratedTask, user.language, {
+    targetTitle: isTelegramJoinTask(hydratedTask) ? telegramTaskTargetTitle(hydratedTask) : undefined
+  });
+}
+
+function withTaskTargetMetadata(task: Task): Task {
+  if (isTelegramJoinTask(task)) {
+    return {
+      ...task,
+      verificationTargetTitle: telegramTaskTargetTitle(task)
+    };
+  }
+
+  if (task.category === "website" && task.verificationTarget) {
+    return {
+      ...task,
+      verificationTargetUrl: task.verificationTarget
+    };
+  }
+
+  return task;
+}
+
+function telegramTaskTargetTitle(task: Task): string {
+  if (!task.verificationTarget) return task.verificationTargetTitle ?? "Telegram channel/group";
+  const chatId = Number(task.verificationTarget);
+  const chat = Number.isFinite(chatId)
+    ? store.snapshot().trackedChats.find((item) => item.id === chatId)
+    : undefined;
+  return chat?.title ?? task.verificationTargetTitle ?? "Telegram channel/group";
+}
+
+function isTelegramJoinTask(task: Task): boolean {
+  return task.category === "telegram" && task.verificationType === "telegram_join" && Boolean(task.verificationTarget);
+}
+
+async function ensureTelegramInviteLink(ctx: Context, task: Task, workerId: number): Promise<TelegramInviteLinkRecord> {
+  const chatId = telegramChatIdFromTask(task);
+  if (!chatId) throw new Error("Telegram chat ID missing.");
+
+  await markExpiredTelegramInviteLinks();
+
+  const nowTime = Date.now();
+  const existing = store.snapshot().telegramInviteLinks.find((link) =>
+    link.taskId === task.id &&
+    link.workerId === workerId &&
+    link.status === "pending" &&
+    new Date(link.expiresAt).getTime() > nowTime
+  );
+  if (existing) return existing;
+
+  const trackedChat = store.snapshot().trackedChats.find((chat) => chat.id === chatId);
+  if (!trackedChat?.canVerifyMembers) {
+    throw new Error("Bot admin access is missing for this channel/group.");
+  }
+  if (trackedChat.canInviteUsers === false) {
+    throw new Error("Bot admin invite-link permission is missing.");
+  }
+
+  const expiresAtMs = nowTime + TELEGRAM_INVITE_LINK_TTL_MS;
+  const result = await createTelegramInviteLink(ctx, chatId, task, workerId, expiresAtMs);
+  const record: TelegramInviteLinkRecord = {
+    id: localId("tginv"),
+    taskId: task.id,
+    workerId,
+    chatId,
+    inviteLink: result.invite_link,
+    chatTitle: trackedChat.title ?? task.verificationTargetTitle,
+    status: "pending",
+    createdAt: new Date(nowTime).toISOString(),
+    expiresAt: new Date(expiresAtMs).toISOString()
+  };
+  await store.upsertTelegramInviteLink(record);
+  return record;
+}
+
+async function createTelegramInviteLink(
+  ctx: Context,
+  chatId: number,
+  task: Task,
+  workerId: number,
+  expiresAtMs: number
+): Promise<{ invite_link: string }> {
+  try {
+    const result = await ctx.telegram.callApi("createChatInviteLink", {
+      chat_id: chatId,
+      name: `Neosence ${shortId(task.id)} ${workerId}`.slice(0, 32),
+      expire_date: Math.floor(expiresAtMs / 1000),
+      member_limit: 1,
+      creates_join_request: false
+    });
+    return result as { invite_link: string };
+  } catch (error) {
+    const retryAfter = telegramRetryAfter(error);
+    if (retryAfter) {
+      throw new Error(`Telegram rate limit. Try again in ${retryAfter}s.`);
+    }
+    throw error;
+  }
+}
+
+async function markExpiredTelegramInviteLinks() {
+  const nowTime = Date.now();
+  const expiredLinks = store.snapshot().telegramInviteLinks.filter((link) =>
+    link.status === "pending" &&
+    new Date(link.expiresAt).getTime() <= nowTime
+  );
+
+  for (const link of expiredLinks) {
+    await store.upsertTelegramInviteLink({ ...link, status: "expired" });
+  }
+}
+
+function telegramChatIdFromTask(task: Task): number | undefined {
+  if (!task.verificationTarget) return undefined;
+  const chatId = Number(task.verificationTarget);
+  return Number.isFinite(chatId) ? chatId : undefined;
+}
+
+function telegramRetryAfter(error: unknown): number | undefined {
+  const data = error as {
+    parameters?: { retry_after?: number };
+    response?: { parameters?: { retry_after?: number } };
+  };
+  return data.parameters?.retry_after ?? data.response?.parameters?.retry_after;
+}
+
+function escapeTelegramHtml(value: string): string {
+  return escapeHtml(value);
 }
 
 function earnFeedKeyboard(task: Task, category: string, messages: MessageBundle = t, user?: { language: "en" | "bn" }) {
@@ -2391,6 +2570,17 @@ async function notifyWaitingDraftsForChat(chat: TrackedChat) {
       continue;
     }
 
+    if (chat.canInviteUsers === false) {
+      await bot.telegram.sendMessage(
+        userId,
+        [
+          `Bot admin access detected for ${chat.title ?? chat.id}.`,
+          "Invite-link permission is still missing. Enable invite users / create invite links permission, then send the same ID again."
+        ].join("\n")
+      );
+      continue;
+    }
+
     draft.step = "confirm";
     taskDrafts.set(userId, draft);
     await bot.telegram.sendMessage(
@@ -2402,6 +2592,232 @@ async function notifyWaitingDraftsForChat(chat: TrackedChat) {
       confirmTaskKeyboard()
     );
   }
+}
+
+type TelegramChatMemberLike = {
+  status: string;
+  is_member?: boolean;
+  user?: { id: number; is_bot?: boolean; first_name?: string };
+};
+
+type TelegramChatMemberUpdateLike = {
+  chat: { id: number; title?: string };
+  old_chat_member: TelegramChatMemberLike;
+  new_chat_member: TelegramChatMemberLike & { user: { id: number; is_bot?: boolean; first_name?: string } };
+  invite_link?: { invite_link?: string };
+};
+
+async function handleTelegramMembershipUpdate(ctx: Context) {
+  const update = (ctx as unknown as { chatMember?: TelegramChatMemberUpdateLike }).chatMember;
+  if (!update?.new_chat_member.user || update.new_chat_member.user.is_bot) return;
+
+  const wasActive = isActiveTelegramMember(update.old_chat_member);
+  const isActive = isActiveTelegramMember(update.new_chat_member);
+
+  if (!wasActive && isActive) {
+    await handleTelegramMemberJoined(update);
+    return;
+  }
+
+  if (wasActive && !isActive) {
+    await handleTelegramMemberLeft(update);
+  }
+}
+
+async function handleTelegramMemberJoined(update: TelegramChatMemberUpdateLike) {
+  const workerId = update.new_chat_member.user.id;
+  const chatId = update.chat.id;
+  const inviteUrl = update.invite_link?.invite_link;
+  if (!inviteUrl) return;
+
+  const state = store.snapshot();
+  const inviteLink = state.telegramInviteLinks.find((link) =>
+    link.inviteLink === inviteUrl &&
+    link.workerId === workerId &&
+    link.chatId === chatId
+  );
+  if (!inviteLink) return;
+
+  const task = state.tasks.find((item) => item.id === inviteLink.taskId);
+  if (!task) return;
+
+  const usedAt = new Date().toISOString();
+  const usedInviteLink: TelegramInviteLinkRecord = {
+    ...inviteLink,
+    status: "used",
+    usedAt,
+    chatTitle: inviteLink.chatTitle ?? update.chat.title
+  };
+  await store.upsertTelegramInviteLink(usedInviteLink);
+
+  let submission = store.snapshot().submissions.find((item) => item.taskId === task.id && item.workerId === workerId);
+  if (!submission) {
+    await store.addVerificationEvent(createVerificationEvent({
+      taskId: task.id,
+      workerId,
+      type: "telegram_join",
+      status: "passed",
+      metadata: { source: "invite_link", inviteLinkId: inviteLink.id, chatId }
+    }));
+
+    try {
+      submission = await completeAutoTask(task, workerId, "telegram_join_invite_verified", "Telegram invite join verified");
+    } catch (error) {
+      await store.addVerificationEvent(createVerificationEvent({
+        taskId: task.id,
+        workerId,
+        type: "telegram_join",
+        status: "failed",
+        metadata: { source: "invite_link", inviteLinkId: inviteLink.id, chatId, reason: (error as Error).message }
+      }));
+      return;
+    }
+  }
+
+  await recordTelegramMembershipForJoin(task, workerId, chatId, inviteLink.id, submission.id);
+  await revokeTelegramInviteLink(usedInviteLink);
+  await sendTelegramMessageSafe(workerId, `Telegram join verified. ${formatMoneyForUser(workerId, task.rewardPerWorker)} added to your wallet.`);
+}
+
+async function handleTelegramMemberLeft(update: TelegramChatMemberUpdateLike) {
+  const workerId = update.new_chat_member.user.id;
+  const chatId = update.chat.id;
+  const activeMemberships = store.snapshot().telegramMemberships.filter((membership) =>
+    membership.workerId === workerId &&
+    membership.chatId === chatId &&
+    membership.active
+  );
+
+  for (const membership of activeMemberships) {
+    await applyTelegramLeaveClawback(membership);
+  }
+}
+
+async function recordTelegramMembershipForJoin(
+  task: Task,
+  workerId: number,
+  chatId: number,
+  inviteLinkId: string | undefined,
+  submissionId: string | undefined
+): Promise<TelegramMembershipRecord> {
+  const existing = store.snapshot().telegramMemberships.find((membership) =>
+    membership.taskId === task.id &&
+    membership.workerId === workerId &&
+    membership.chatId === chatId
+  );
+  if (existing && !existing.active) return existing;
+
+  const nowTime = new Date().toISOString();
+  const membership: TelegramMembershipRecord = existing
+    ? {
+      ...existing,
+      inviteLinkId: existing.inviteLinkId ?? inviteLinkId,
+      submissionId: existing.submissionId ?? submissionId,
+      active: true
+    }
+    : {
+      id: localId("tgmem"),
+      taskId: task.id,
+      workerId,
+      buyerId: task.buyerId,
+      chatId,
+      inviteLinkId,
+      submissionId,
+      rewardAmount: task.rewardPerWorker,
+      recoveredAmount: 0,
+      active: true,
+      joinedAt: nowTime
+    };
+
+  await store.upsertTelegramMembership(membership);
+  return membership;
+}
+
+async function applyTelegramLeaveClawback(membership: TelegramMembershipRecord) {
+  const task = store.snapshot().tasks.find((item) => item.id === membership.taskId);
+  const debitAmount = roundMoney(Math.max(membership.rewardAmount - membership.recoveredAmount, 0));
+  const nowTime = new Date().toISOString();
+
+  if (!task || debitAmount <= 0) {
+    await store.upsertTelegramMembership({ ...membership, active: false, leftAt: nowTime });
+    return;
+  }
+
+  const workerWallet = walletSummary(store.snapshot(), membership.workerId);
+  const recoveredAmount = roundMoney(Math.max(0, Math.min(workerWallet.available, debitAmount)));
+
+  await store.addTransaction(createTransaction({
+    userId: membership.workerId,
+    type: "clawback_debit",
+    amount: debitAmount,
+    taskId: membership.taskId,
+    submissionId: membership.submissionId,
+    note: "Telegram channel/group leave clawback"
+  }));
+
+  if (recoveredAmount > 0) {
+    await store.addTransaction(createTransaction({
+      userId: membership.buyerId,
+      type: "clawback_refund",
+      amount: recoveredAmount,
+      taskId: membership.taskId,
+      submissionId: membership.submissionId,
+      note: "Recovered Telegram leave refund"
+    }));
+  }
+
+  await store.upsertTelegramMembership({
+    ...membership,
+    active: false,
+    recoveredAmount: roundMoney(membership.recoveredAmount + recoveredAmount),
+    leftAt: nowTime
+  });
+  await refreshUserTrustLevel(membership.workerId);
+
+  await sendTelegramMessageSafe(
+    membership.workerId,
+    `You left a Telegram task target. ${formatMoneyForUser(membership.workerId, debitAmount)} was deducted from your balance.`
+  );
+  if (recoveredAmount > 0) {
+    await sendTelegramMessageSafe(
+      membership.buyerId,
+      `Telegram task leave detected. ${formatMoneyForUser(membership.buyerId, recoveredAmount)} was refunded from recovered worker balance.`
+    );
+  }
+}
+
+async function revokeTelegramInviteLink(link: TelegramInviteLinkRecord) {
+  try {
+    await bot.telegram.callApi("revokeChatInviteLink", {
+      chat_id: link.chatId,
+      invite_link: link.inviteLink
+    });
+    await store.upsertTelegramInviteLink({
+      ...link,
+      status: "used",
+      revokedAt: new Date().toISOString()
+    });
+  } catch {
+    // The link may already be used or expired. Tracking remains valid through the membership record.
+  }
+}
+
+async function sendTelegramMessageSafe(chatId: number, text: string) {
+  try {
+    await bot.telegram.sendMessage(chatId, text);
+  } catch {
+    // User may have blocked the bot; the ledger update is still the source of truth.
+  }
+}
+
+function isActiveTelegramMember(member: TelegramChatMemberLike): boolean {
+  if (["member", "administrator", "creator"].includes(member.status)) return true;
+  return member.status === "restricted" && member.is_member === true;
+}
+
+function formatMoneyForUser(userId: number, amount: number): string {
+  const user = store.snapshot().users.find((item) => item.id === userId);
+  return formatMoney(amount, user?.language);
 }
 
 async function handleTaskWizardMessage(ctx: Context & { from: TelegramFrom; message: unknown }, draft: TaskDraft) {
@@ -2538,6 +2954,16 @@ async function handleTaskWizardMessage(ctx: Context & { from: TelegramFrom; mess
         ].join("\n"));
         return;
       }
+      if (trackedChat.canInviteUsers === false) {
+        draft.verificationTarget = String(chatId);
+        taskDrafts.set(ctx.from.id, draft);
+        await ctx.reply([
+          "Bot admin access is detected, but invite-link permission is missing.",
+          "Enable invite users / create invite links permission for this bot, then send the same ID again.",
+          `Waiting chat ID: ${chatId}`
+        ].join("\n"));
+        return;
+      }
       draft.verificationTarget = String(chatId);
     } else {
       draft.verificationTarget = text.slice(0, 300);
@@ -2626,12 +3052,23 @@ function formatDraftReview(draft: TaskDraft, messages: MessageBundle = t, langua
     `Workers: ${draft.workerLimit}`,
     `Total escrow: ${formatMoneyDetail(rewardTotal + fee, language)}`,
     draft.verificationType ? `Verification: ${draft.verificationType}` : undefined,
-    draft.verificationTarget ? `Target: ${draft.verificationTarget}` : undefined,
+    draft.verificationTarget ? `Target: ${formatDraftTarget(draft)}` : undefined,
     draft.websiteVisitSeconds ? `Visit timer: ${draft.websiteVisitSeconds}s` : undefined,
     "",
     "Instructions:",
     draft.instructions
   ].filter(Boolean).join("\n");
+}
+
+function formatDraftTarget(draft: TaskDraft): string {
+  if (draft.verificationType === "telegram_join" && draft.verificationTarget) {
+    const chatId = Number(draft.verificationTarget);
+    const chat = Number.isFinite(chatId)
+      ? store.snapshot().trackedChats.find((item) => item.id === chatId)
+      : undefined;
+    return chat?.title ?? "Telegram channel/group";
+  }
+  return draft.verificationTarget ?? "";
 }
 
 function verificationTargetPrompt(type: VerificationType, messages: MessageBundle = t): string {
@@ -3183,6 +3620,17 @@ function campaignOutstandingEscrow(taskId: string): number {
 
 function assertCampaignTargetAllowed(newTask: Task) {
   if (!newTask.verificationTarget) return;
+  if (newTask.verificationType === "telegram_join") {
+    const chatId = telegramChatIdFromTask(newTask);
+    const trackedChat = chatId ? store.snapshot().trackedChats.find((chat) => chat.id === chatId) : undefined;
+    if (!trackedChat?.canVerifyMembers) {
+      throw new Error("Add the bot as an admin in this channel/group first, then send the same numeric chat ID again.");
+    }
+    if (trackedChat.canInviteUsers === false) {
+      throw new Error("The bot is admin, but invite-link permission is missing. Enable invite users / create invite links permission.");
+    }
+  }
+
   const duplicate = store.snapshot().tasks.find((task) =>
     task.buyerId === newTask.buyerId &&
     task.status === "active" &&
@@ -3513,44 +3961,43 @@ async function verifyTelegramJoin(ctx: Context & { from: TelegramFrom }, taskId:
   }
 
   try {
-    const chatId = Number(task.verificationTarget);
+    const chatId = telegramChatIdFromTask(task);
+    if (!chatId) {
+      await ctx.reply("Verification target missing.");
+      return;
+    }
     const trackedChat = store.snapshot().trackedChats.find((chat) => chat.id === chatId);
     if (!trackedChat?.canVerifyMembers) {
       await ctx.reply("The bot does not have admin access to this channel/group yet. Ask the buyer to add the bot as an admin.");
       return;
     }
     const member = await ctx.telegram.getChatMember(chatId, ctx.from.id);
-    const passed = ["member", "administrator", "creator"].includes(member.status);
+    const passed = isActiveTelegramMember(member as TelegramChatMemberLike);
     if (!passed) {
       await ctx.reply("Membership was not verified. Join the channel/group, then press Verify Now again.");
       return;
     }
 
-    const submission = createSubmission(task, ctx.from.id, "telegram_join_verified");
-    const updatedTask = {
-      ...task,
-      completedCount: task.completedCount + 1,
-      status: task.completedCount + 1 >= task.workerLimit ? "completed" as const : task.status,
-      updatedAt: new Date().toISOString()
-    };
-    await store.addSubmission(submission);
-    await store.updateTask(updatedTask);
-    await store.addTransaction(createTransaction({
-      userId: ctx.from.id,
-      type: "earn",
-      amount: task.rewardPerWorker,
+    const existingSubmission = store.snapshot().submissions.find((submission) =>
+      submission.taskId === task.id &&
+      submission.workerId === ctx.from.id
+    );
+    if (existingSubmission) {
+      await recordTelegramMembershipForJoin(task, ctx.from.id, chatId, undefined, existingSubmission.id);
+      await ctx.reply("You already submitted this task.");
+      return;
+    }
+
+    await store.addVerificationEvent(createVerificationEvent({
       taskId: task.id,
-      submissionId: submission.id,
-      note: `Auto verified. Withdraw hold target: ${config.autoWithdrawHoldHours}h`
+      workerId: ctx.from.id,
+      type: "telegram_join",
+      status: "passed",
+      metadata: { source: "verify_now", chatId }
     }));
-    await store.addTransaction(createTransaction({
-      userId: task.buyerId,
-      type: "escrow_release",
-      amount: task.rewardPerWorker,
-      taskId: task.id,
-      submissionId: submission.id
-    }));
-    await ctx.reply(`Verified. ${task.rewardPerWorker} BDT added to your wallet.`);
+    const submission = await completeAutoTask(task, ctx.from.id, "telegram_join_verified", "Telegram join verified");
+    await recordTelegramMembershipForJoin(task, ctx.from.id, chatId, undefined, submission.id);
+    await ctx.reply(`Verified. ${formatMoneyForUser(ctx.from.id, task.rewardPerWorker)} added to your wallet.`);
   } catch (error) {
     await ctx.reply(`Verification failed. Check that the bot is added to the target channel/group. ${(error as Error).message}`);
   }
@@ -3676,11 +4123,13 @@ async function handleInAppCodeAnswer(ctx: Context & { from: TelegramFrom; messag
   }
 }
 
-async function completeAutoTask(task: Task, workerId: number, proof: string, note: string) {
+async function completeAutoTask(task: Task, workerId: number, proof: string, note: string): Promise<Submission> {
   const alreadySubmitted = store.snapshot().submissions.some(
     (submission) => submission.taskId === task.id && submission.workerId === workerId
   );
   if (alreadySubmitted) throw new Error("You already submitted this task.");
+  if (task.status !== "active") throw new Error("This task is not active anymore.");
+  if (task.completedCount >= task.workerLimit) throw new Error("This task already has enough workers.");
 
   const submission = createSubmission(task, workerId, proof);
   const updatedTask = {
@@ -3707,6 +4156,7 @@ async function completeAutoTask(task: Task, workerId: number, proof: string, not
     submissionId: submission.id
   }));
   await refreshUserTrustLevel(workerId);
+  return submission;
 }
 
 function normalizeAnswer(answer: string): string {
@@ -3744,10 +4194,12 @@ try {
   await bot.telegram.getMe();
   if (shouldUseWebhook()) {
     telegramWebhookCallback = bot.webhookCallback(telegramWebhookPath);
-    await bot.telegram.setWebhook(new URL(telegramWebhookPath, publicBaseUrl()).toString());
+    await bot.telegram.setWebhook(new URL(telegramWebhookPath, publicBaseUrl()).toString(), {
+      allowed_updates: [...TELEGRAM_ALLOWED_UPDATES]
+    });
     console.log(`Telegram webhook enabled at ${telegramWebhookPath}`);
   } else {
-    void bot.launch().catch((error) => {
+    void bot.launch({ allowedUpdates: [...TELEGRAM_ALLOWED_UPDATES] }).catch((error) => {
       botRuntime.launchState = "failed";
       botRuntime.lastError = error instanceof Error ? error.message : String(error);
       console.error("Bot launch failed", error);

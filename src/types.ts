@@ -29,6 +29,8 @@ export type TransactionType =
   | "escrow_lock"
   | "escrow_release"
   | "escrow_refund"
+  | "clawback_debit"
+  | "clawback_refund"
   | "earn"
   | "fee"
   | "withdraw_request"
@@ -60,6 +62,8 @@ export interface Task {
   approvalType: TaskApprovalType;
   verificationType?: VerificationType;
   verificationTarget?: string;
+  verificationTargetTitle?: string;
+  verificationTargetUrl?: string;
   websiteVisitSeconds?: number;
   proofRequired: boolean;
   status: TaskStatus;
@@ -158,7 +162,37 @@ export interface TrackedChat {
   type: "group" | "supergroup" | "channel" | "private";
   botStatus: string;
   canVerifyMembers: boolean;
+  canInviteUsers?: boolean;
   updatedAt: string;
+}
+
+export interface TelegramInviteLinkRecord {
+  id: string;
+  taskId: string;
+  workerId: number;
+  chatId: number;
+  inviteLink: string;
+  chatTitle?: string;
+  status: "pending" | "used" | "revoked" | "expired";
+  createdAt: string;
+  expiresAt: string;
+  usedAt?: string;
+  revokedAt?: string;
+}
+
+export interface TelegramMembershipRecord {
+  id: string;
+  taskId: string;
+  workerId: number;
+  buyerId: number;
+  chatId: number;
+  inviteLinkId?: string;
+  submissionId?: string;
+  rewardAmount: number;
+  recoveredAmount: number;
+  active: boolean;
+  joinedAt: string;
+  leftAt?: string;
 }
 
 export interface StoreState {
@@ -173,6 +207,8 @@ export interface StoreState {
   supportTickets: SupportTicket[];
   disputes: Dispute[];
   trackedChats: TrackedChat[];
+  telegramInviteLinks: TelegramInviteLinkRecord[];
+  telegramMemberships: TelegramMembershipRecord[];
 }
 
 export interface ApiVerificationPayload {

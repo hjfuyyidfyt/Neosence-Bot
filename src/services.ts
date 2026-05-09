@@ -222,8 +222,8 @@ export function walletSummary(state: StoreState, userId: number) {
     .reduce((sum, item) => sum + item.amount, 0);
 
   const available = completed.reduce((sum, item) => {
-    if (["deposit", "earn", "escrow_refund", "withdraw_rejected"].includes(item.type)) return sum + item.amount;
-    if (["escrow_lock", "withdraw_request"].includes(item.type)) return sum - item.amount;
+    if (["deposit", "earn", "escrow_refund", "withdraw_rejected", "clawback_refund"].includes(item.type)) return sum + item.amount;
+    if (["escrow_lock", "withdraw_request", "clawback_debit"].includes(item.type)) return sum - item.amount;
     return sum;
   }, 0);
 

@@ -9,6 +9,8 @@ import type {
   Submission,
   SupportTicket,
   Task,
+  TelegramInviteLinkRecord,
+  TelegramMembershipRecord,
   TrackedChat,
   UserProfile,
   VerificationEvent,
@@ -29,7 +31,9 @@ const emptyState = (): StoreState => ({
   referrals: [],
   supportTickets: [],
   disputes: [],
-  trackedChats: []
+  trackedChats: [],
+  telegramInviteLinks: [],
+  telegramMemberships: []
 });
 
 export interface NeosenceStore {
@@ -52,6 +56,8 @@ export interface NeosenceStore {
   addDispute(dispute: Dispute): Promise<void>;
   updateDispute(dispute: Dispute): Promise<void>;
   upsertTrackedChat(chat: TrackedChat): Promise<void>;
+  upsertTelegramInviteLink(link: TelegramInviteLinkRecord): Promise<void>;
+  upsertTelegramMembership(membership: TelegramMembershipRecord): Promise<void>;
 }
 
 abstract class CachedStore implements NeosenceStore {
@@ -163,6 +169,20 @@ abstract class CachedStore implements NeosenceStore {
     const index = this.state.trackedChats.findIndex((item) => item.id === chat.id);
     if (index >= 0) this.state.trackedChats[index] = chat;
     else this.state.trackedChats.push(chat);
+    await this.save();
+  }
+
+  async upsertTelegramInviteLink(link: TelegramInviteLinkRecord): Promise<void> {
+    const index = this.state.telegramInviteLinks.findIndex((item) => item.id === link.id);
+    if (index >= 0) this.state.telegramInviteLinks[index] = link;
+    else this.state.telegramInviteLinks.push(link);
+    await this.save();
+  }
+
+  async upsertTelegramMembership(membership: TelegramMembershipRecord): Promise<void> {
+    const index = this.state.telegramMemberships.findIndex((item) => item.id === membership.id);
+    if (index >= 0) this.state.telegramMemberships[index] = membership;
+    else this.state.telegramMemberships.push(membership);
     await this.save();
   }
 }
