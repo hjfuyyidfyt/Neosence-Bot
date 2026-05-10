@@ -35,6 +35,8 @@ import type {
   ApiVerificationPayload,
   DepositRequest,
   Dispute,
+  GeniLink,
+  GeniVisit,
   PayoutMethodType,
   Submission,
   Task,
@@ -100,6 +102,18 @@ interface TaskDraft {
 }
 
 const taskDrafts = new Map<number, TaskDraft>();
+type GeniDraftStep = "name" | "shortener";
+
+interface GeniDraft {
+  step: GeniDraftStep;
+  linkId?: string;
+  name?: string;
+  createdAt: number;
+  updatedAt: number;
+  expiresAt: number;
+}
+
+const geniDrafts = new Map<number, GeniDraft>();
 const DRAFT_TTL_MS = 60 * 60 * 1000;
 const VERIFY_COOLDOWN_MS = 15 * 1000;
 const TELEGRAM_INVITE_LINK_TTL_MS = 30 * 60 * 1000;
@@ -111,6 +125,7 @@ const MIN_REWARD_USD: Record<string, number> = {
   website: 0.034
 };
 const localId = (prefix: string) => `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+const compactId = (prefix: string) => `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
 const PUBLIC_BOT_COMMANDS = [
   { command: "start", description: "🏠 Open Neosence home" },
   { command: "earn", description: "💼 Find tasks to complete" },
@@ -151,7 +166,8 @@ const ADMIN_CONSOLE_COMMANDS = [
   { command: "unban", description: "🔓 Restore user access" },
   { command: "broadcast", description: "📣 Prepare announcement flow" },
   { command: "audit", description: "🧾 View recent admin activity" },
-  { command: "settings", description: "⚙️ View system settings" }
+  { command: "settings", description: "⚙️ View system settings" },
+  { command: "geni", description: "🧪 Open GENI short-link lab" }
 ];
 const ADMIN_PANEL_CHANNEL_COMMANDS = [
   { command: "chatid", description: "🆔 Show this channel ID" },
@@ -180,9 +196,15 @@ bot.use(async (ctx, next) => {
 });
 
 bot.start(async (ctx) => {
+  const payload = getStartPayload(ctx.message.text);
   const wasExistingUser = store.snapshot().users.some((item) => item.id === ctx.from.id);
   const user = await ensureUser(ctx.from);
-  const referralMessage = await maybeApplyReferral(getStartPayload(ctx.message.text), user.id, wasExistingUser);
+  if (payload?.startsWith("geni_")) {
+    await handleGeniTelegramVerify(ctx, payload);
+    return;
+  }
+
+  const referralMessage = await maybeApplyReferral(payload, user.id, wasExistingUser);
   const messages = getMessages(user.language);
   await ctx.reply(
     [
@@ -230,6 +252,7 @@ bot.command("cancel", async (ctx) => {
   payoutSetupWaiters.delete(ctx.from.id);
   customWithdrawWaiters.delete(ctx.from.id);
   supportWaiters.delete(ctx.from.id);
+  geniDrafts.delete(ctx.from.id);
   await ctx.reply(userMessages(ctx.from.id).common.currentInputCancelled);
 });
 
@@ -446,6 +469,11 @@ bot.command("submissions", async (ctx) => {
 bot.command("settings", async (ctx) => {
   if (!(await requireAdminConsole(ctx, "settings"))) return;
   await ctx.reply(formatAdminSettings(), adminSettingsKeyboard());
+});
+
+bot.command("geni", async (ctx) => {
+  if (!(await requireAdminConsole(ctx, "geni"))) return;
+  await showScreen(ctx, formatGeniDashboard(), geniDashboardKeyboard());
 });
 
 bot.command("audit", async (ctx) => {
@@ -1236,6 +1264,115 @@ bot.action("admin:audit", async (ctx) => {
   await showScreen(ctx, formatAdminAudit(), adminAuditKeyboard());
 });
 
+bot.action("geni:dashboard", async (ctx) => {
+  if (!(await requireAdminPanelCallback(ctx, "geni"))) return;
+  await ctx.answerCbQuery();
+  await showScreen(ctx, formatGeniDashboard(), geniDashboardKeyboard());
+});
+
+bot.action("geni:new", async (ctx) => {
+  if (!(await requireAdminPanelCallback(ctx, "geni"))) return;
+  await ctx.answerCbQuery();
+  setGeniDraft(ctx.from.id, { step: "name" });
+  await showScreen(ctx, "🧪 New GENI Link\n\nSend a short name for this tracking link.", geniCancelKeyboard());
+});
+
+bot.action("geni:links", async (ctx) => {
+  if (!(await requireAdminPanelCallback(ctx, "geni"))) return;
+  await ctx.answerCbQuery();
+  await showScreen(ctx, formatGeniLinks(), geniLinksKeyboard());
+});
+
+bot.action("geni:analytics", async (ctx) => {
+  if (!(await requireAdminPanelCallback(ctx, "geni"))) return;
+  await ctx.answerCbQuery();
+  await showScreen(ctx, formatGeniAnalytics(), geniDashboardKeyboard());
+});
+
+bot.action("geni:logs", async (ctx) => {
+  if (!(await requireAdminPanelCallback(ctx, "geni"))) return;
+  await ctx.answerCbQuery();
+  await showScreen(ctx, formatGeniLogs(), geniDashboardKeyboard());
+});
+
+bot.action("geni:cancel", async (ctx) => {
+  if (!(await requireAdminPanelCallback(ctx, "geni"))) return;
+  geniDrafts.delete(ctx.from.id);
+  await ctx.answerCbQuery("Cancelled");
+  await showScreen(ctx, formatGeniDashboard(), geniDashboardKeyboard());
+});
+
+bot.action(/^geni:link:(.+)$/, async (ctx) => {
+  if (!(await requireAdminPanelCallback(ctx, "geni"))) return;
+  const link = store.snapshot().geniLinks.find((item) => item.id === ctx.match[1]);
+  if (!link) {
+    await ctx.answerCbQuery("GENI link not found.", { show_alert: true });
+    return;
+  }
+  await ctx.answerCbQuery();
+  await showScreen(ctx, formatGeniLinkDetail(link), geniLinkKeyboard(link));
+});
+
+bot.action(/^geni:urls:(.+)$/, async (ctx) => {
+  if (!(await requireAdminPanelCallback(ctx, "geni"))) return;
+  const link = store.snapshot().geniLinks.find((item) => item.id === ctx.match[1]);
+  if (!link) {
+    await ctx.answerCbQuery("GENI link not found.", { show_alert: true });
+    return;
+  }
+  await ctx.answerCbQuery();
+  await showScreen(ctx, formatGeniLinkUrls(link), geniLinkKeyboard(link));
+});
+
+bot.action(/^geni:shortener:(.+)$/, async (ctx) => {
+  if (!(await requireAdminPanelCallback(ctx, "geni"))) return;
+  const link = store.snapshot().geniLinks.find((item) => item.id === ctx.match[1]);
+  if (!link) {
+    await ctx.answerCbQuery("GENI link not found.", { show_alert: true });
+    return;
+  }
+  setGeniDraft(ctx.from.id, { step: "shortener", linkId: link.id, name: link.name });
+  await ctx.answerCbQuery();
+  await showScreen(ctx, [
+    "🔗 Add Shortener URL",
+    "",
+    `Link: ${link.name}`,
+    "",
+    "First use this Final URL as the destination in your paid shortener:",
+    geniFinalUrl(link.id),
+    "",
+    "Then send the shortener URL here.",
+    "Send skip to leave it empty."
+  ].join("\n"), geniCancelKeyboard(link.id));
+});
+
+bot.action(/^geni:(pause|resume|archive):(.+)$/, async (ctx) => {
+  if (!(await requireAdminPanelCallback(ctx, "geni"))) return;
+  const action = ctx.match[1];
+  const link = store.snapshot().geniLinks.find((item) => item.id === ctx.match[2]);
+  if (!link) {
+    await ctx.answerCbQuery("GENI link not found.", { show_alert: true });
+    return;
+  }
+
+  const status = action === "pause" ? "paused" : action === "resume" ? "active" : "archived";
+  const updated: GeniLink = {
+    ...link,
+    status,
+    updatedAt: new Date().toISOString()
+  };
+  await store.upsertGeniLink(updated);
+  await addAdminAudit({
+    adminId: ctx.from.id,
+    action: `geni_${action}`,
+    targetType: "geni_link",
+    targetId: updated.id,
+    note: updated.name
+  });
+  await ctx.answerCbQuery(`GENI link ${status}.`);
+  await showScreen(ctx, formatGeniLinkDetail(updated), geniLinkKeyboard(updated));
+});
+
 bot.on("channel_post", async (ctx) => {
   const post = (ctx as unknown as { channelPost?: { chat: { id: number }; text?: string } }).channelPost;
   const text = post?.text?.trim();
@@ -1899,6 +2036,12 @@ bot.on("message", async (ctx, next) => {
     return;
   }
 
+  const geniDraft = geniDrafts.get(ctx.from.id);
+  if (geniDraft && isAdminConsoleCommandContext(ctx)) {
+    await handleGeniDraftMessage(ctx, geniDraft);
+    return;
+  }
+
   const draft = getTaskDraft(ctx.from.id);
   if (draft) {
     await handleTaskWizardMessage(ctx, draft);
@@ -1952,7 +2095,7 @@ function adminUnknownCommandText(): string {
   return "I did not understand this command.\n\nAdmin actions are available only inside the configured admin console group.";
 }
 
-type AdminPermission = "dashboard" | "admin_management" | "finance" | "review" | "support" | "users" | "moderation" | "settings";
+type AdminPermission = "dashboard" | "admin_management" | "finance" | "review" | "support" | "users" | "moderation" | "settings" | "geni";
 
 function adminRole(userId: number): AdminRole | undefined {
   if (isAdmin(userId)) return "owner";
@@ -2884,6 +3027,7 @@ async function setUserBanStatus(userId: number, isBanned: boolean) {
   payoutSetupWaiters.delete(userId);
   customWithdrawWaiters.delete(userId);
   supportWaiters.delete(userId);
+  geniDrafts.delete(userId);
   return updatedUser;
 }
 
@@ -3815,6 +3959,315 @@ function isCompleteDraft(draft: TaskDraft): draft is Required<Pick<TaskDraft, "t
 function extractText(message: unknown): string | undefined {
   const textMessage = message as { text?: string };
   return textMessage.text?.trim();
+}
+
+function setGeniDraft(userId: number, draft: Partial<GeniDraft> & { step: GeniDraftStep }) {
+  const nowTime = Date.now();
+  const existing = geniDrafts.get(userId);
+  geniDrafts.set(userId, {
+    ...existing,
+    ...draft,
+    createdAt: existing?.createdAt ?? nowTime,
+    updatedAt: nowTime,
+    expiresAt: nowTime + DRAFT_TTL_MS
+  });
+}
+
+async function handleGeniDraftMessage(ctx: Context & { from: TelegramFrom; message: unknown }, draft: GeniDraft) {
+  if (Date.now() > draft.expiresAt) {
+    geniDrafts.delete(ctx.from.id);
+    await showFlowScreen(ctx, "GENI draft expired. Use /geni to start again.", adminBackKeyboard());
+    return;
+  }
+
+  const text = extractText(ctx.message);
+  if (!text) {
+    await showFlowScreen(ctx, "Send text only for this GENI step.", geniCancelKeyboard(draft.linkId));
+    return;
+  }
+
+  if (text.toLowerCase() === "cancel") {
+    geniDrafts.delete(ctx.from.id);
+    await showFlowScreen(ctx, formatGeniDashboard(), geniDashboardKeyboard());
+    return;
+  }
+
+  if (draft.step === "name") {
+    const name = text.slice(0, 80);
+    const now = new Date().toISOString();
+    const link: GeniLink = {
+      id: compactId("gl"),
+      name,
+      adminId: ctx.from.id,
+      status: "active",
+      createdAt: now,
+      updatedAt: now
+    };
+    await store.upsertGeniLink(link);
+    await addAdminAudit({
+      adminId: ctx.from.id,
+      action: "geni_create",
+      targetType: "geni_link",
+      targetId: link.id,
+      note: link.name
+    });
+    setGeniDraft(ctx.from.id, { step: "shortener", linkId: link.id, name: link.name });
+    await showFlowScreen(ctx, [
+      "🧪 GENI link created",
+      "",
+      `Name: ${link.name}`,
+      "",
+      "Use this Final URL as the destination/final URL in your paid shortener:",
+      geniFinalUrl(link.id),
+      "",
+      "Then send the generated paid shortener URL here.",
+      "Send skip if you only want final-URL tracking for now."
+    ].join("\n"), geniCancelKeyboard(link.id));
+    return;
+  }
+
+  if (draft.step === "shortener") {
+    const link = store.snapshot().geniLinks.find((item) => item.id === draft.linkId);
+    if (!link) {
+      geniDrafts.delete(ctx.from.id);
+      await showFlowScreen(ctx, "GENI link not found. Use /geni to start again.", geniDashboardKeyboard());
+      return;
+    }
+
+    const lower = text.toLowerCase();
+    if (lower !== "skip") {
+      try {
+        assertHttpUrl(text);
+      } catch (error) {
+        await showFlowScreen(ctx, [
+          (error as Error).message,
+          "",
+          "Send a valid http/https paid shortener URL, or send skip."
+        ].join("\n"), geniCancelKeyboard(link.id));
+        return;
+      }
+    }
+
+    const updated: GeniLink = {
+      ...link,
+      shortenerUrl: lower === "skip" ? link.shortenerUrl : text,
+      updatedAt: new Date().toISOString()
+    };
+    await store.upsertGeniLink(updated);
+    await addAdminAudit({
+      adminId: ctx.from.id,
+      action: lower === "skip" ? "geni_skip_shortener" : "geni_set_shortener",
+      targetType: "geni_link",
+      targetId: updated.id,
+      note: updated.name
+    });
+    geniDrafts.delete(ctx.from.id);
+    await showFlowScreen(ctx, formatGeniLinkDetail(updated), geniLinkKeyboard(updated));
+  }
+}
+
+function assertHttpUrl(value: string) {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("URL must start with http:// or https://.");
+  } catch {
+    throw new Error("Invalid URL.");
+  }
+}
+
+function geniStats(linkId?: string) {
+  const visits = linkId
+    ? store.snapshot().geniVisits.filter((visit) => visit.linkId === linkId)
+    : store.snapshot().geniVisits;
+  const started = visits.length;
+  const completed = visits.filter((visit) => visit.status === "completed").length;
+  const telegramVerified = visits.filter((visit) => visit.telegramUserId).length;
+  const suspect = visits.filter((visit) => visit.suspectReason).length;
+  const directFinal = visits.filter((visit) => visit.suspectReason === "no_start_session").length;
+  const todayPrefix = new Date().toISOString().slice(0, 10);
+  const todayStarted = visits.filter((visit) => visit.startedAt.startsWith(todayPrefix)).length;
+  const todayCompleted = visits.filter((visit) => visit.completedAt?.startsWith(todayPrefix)).length;
+  return {
+    started,
+    completed,
+    telegramVerified,
+    suspect,
+    directFinal,
+    todayStarted,
+    todayCompleted,
+    completionRate: started > 0 ? Math.round((completed / started) * 100) : 0
+  };
+}
+
+function formatGeniDashboard(): string {
+  const state = store.snapshot();
+  const active = state.geniLinks.filter((link) => link.status === "active").length;
+  const paused = state.geniLinks.filter((link) => link.status === "paused").length;
+  const archived = state.geniLinks.filter((link) => link.status === "archived").length;
+  const stats = geniStats();
+  return [
+    "🧪 GENI Short Link Lab",
+    "",
+    `Active links: ${active}`,
+    `Paused links: ${paused}`,
+    `Archived links: ${archived}`,
+    "",
+    `Today started: ${stats.todayStarted}`,
+    `Today completed: ${stats.todayCompleted}`,
+    `Completion rate: ${stats.completionRate}%`,
+    `Telegram verified: ${stats.telegramVerified}`,
+    `Suspect traffic: ${stats.suspect}`,
+    "",
+    "Experimental admin-only tracking for paid shortener final URLs."
+  ].join("\n");
+}
+
+function geniDashboardKeyboard() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("➕ New Link", "geni:new"), Markup.button.callback("🔗 Links", "geni:links")],
+    [Markup.button.callback("📊 Analytics", "geni:analytics"), Markup.button.callback("🧾 Logs", "geni:logs")],
+    [Markup.button.callback("⬅️ Admin Panel", "admin:dashboard")]
+  ]);
+}
+
+function geniCancelKeyboard(linkId?: string) {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("Cancel", "geni:cancel")],
+    linkId ? [Markup.button.callback("Open Link Card", `geni:link:${linkId}`)] : [Markup.button.callback("Dashboard", "geni:dashboard")]
+  ]);
+}
+
+function formatGeniLinks(): string {
+  const links = store.snapshot().geniLinks
+    .filter((link) => link.status !== "archived")
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  if (links.length === 0) return "🔗 GENI Links\n\nNo active links yet.";
+  return [
+    "🔗 GENI Links",
+    "",
+    ...links.slice(0, 12).map((link) => {
+      const stats = geniStats(link.id);
+      return `${geniStatusIcon(link.status)} ${link.name}\n${shortId(link.id)} • ${stats.completed}/${stats.started} completed • ${stats.completionRate}%`;
+    })
+  ].join("\n\n");
+}
+
+function geniLinksKeyboard() {
+  const rows = store.snapshot().geniLinks
+    .filter((link) => link.status !== "archived")
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+    .slice(0, 10)
+    .map((link) => [Markup.button.callback(`${geniStatusIcon(link.status)} ${link.name.slice(0, 28)}`, `geni:link:${link.id}`)]);
+  rows.push([Markup.button.callback("➕ New Link", "geni:new")]);
+  rows.push([Markup.button.callback("⬅️ Dashboard", "geni:dashboard")]);
+  return Markup.inlineKeyboard(rows);
+}
+
+function formatGeniAnalytics(): string {
+  const stats = geniStats();
+  const links = store.snapshot().geniLinks.filter((link) => link.status !== "archived");
+  const topLinks = [...links]
+    .sort((left, right) => geniStats(right.id).completed - geniStats(left.id).completed)
+    .slice(0, 5);
+  return [
+    "📊 GENI Analytics",
+    "",
+    `Started: ${stats.started}`,
+    `Completed: ${stats.completed}`,
+    `Completion rate: ${stats.completionRate}%`,
+    `Telegram verified: ${stats.telegramVerified}`,
+    `Direct final hits: ${stats.directFinal}`,
+    `Suspect: ${stats.suspect}`,
+    "",
+    "Top links:",
+    ...(topLinks.length > 0 ? topLinks.map((link) => {
+      const itemStats = geniStats(link.id);
+      return `${link.name}: ${itemStats.completed}/${itemStats.started} (${itemStats.completionRate}%)`;
+    }) : ["No data yet."])
+  ].join("\n");
+}
+
+function formatGeniLogs(): string {
+  const state = store.snapshot();
+  const links = new Map(state.geniLinks.map((link) => [link.id, link]));
+  const visits = [...state.geniVisits].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)).slice(0, 12);
+  if (visits.length === 0) return "🧾 GENI Logs\n\nNo visits yet.";
+  return [
+    "🧾 GENI Logs",
+    "",
+    ...visits.map((visit) => [
+      `${visit.status.toUpperCase()} • ${links.get(visit.linkId)?.name ?? visit.linkId}`,
+      `Visit: ${shortId(visit.id)}`,
+      visit.telegramUserId ? `Telegram: ${visit.telegramUserId}` : undefined,
+      visit.suspectReason ? `Flag: ${visit.suspectReason}` : undefined,
+      `Time: ${formatDateTime(visit.updatedAt)}`
+    ].filter(Boolean).join("\n"))
+  ].join("\n\n");
+}
+
+function formatGeniLinkDetail(link: GeniLink): string {
+  const stats = geniStats(link.id);
+  return [
+    "🧪 GENI Link",
+    "",
+    `Name: ${link.name}`,
+    `ID: ${link.id}`,
+    `Status: ${geniStatusIcon(link.status)} ${link.status}`,
+    "",
+    `Started: ${stats.started}`,
+    `Completed: ${stats.completed}`,
+    `Completion rate: ${stats.completionRate}%`,
+    `Telegram verified: ${stats.telegramVerified}`,
+    `Suspect: ${stats.suspect}`,
+    "",
+    `Shortener: ${link.shortenerUrl ?? "not set"}`,
+    "",
+    "Use URLs button to view Start and Final URLs."
+  ].join("\n");
+}
+
+function formatGeniLinkUrls(link: GeniLink): string {
+  return [
+    "🔗 GENI URLs",
+    "",
+    `Name: ${link.name}`,
+    "",
+    "Start URL:",
+    geniStartUrl(link.id),
+    "",
+    "Final URL:",
+    geniFinalUrl(link.id),
+    "",
+    "How to use:",
+    "1. Use Final URL as the paid shortener destination.",
+    "2. Paste the paid shortener URL back into this link card.",
+    "3. Share Start URL to track start + completion."
+  ].join("\n");
+}
+
+function geniLinkKeyboard(link: GeniLink) {
+  const statusButton = link.status === "active"
+    ? Markup.button.callback("⏸ Pause", `geni:pause:${link.id}`)
+    : Markup.button.callback("▶️ Resume", `geni:resume:${link.id}`);
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("🔗 URLs", `geni:urls:${link.id}`), Markup.button.callback("✏️ Shortener", `geni:shortener:${link.id}`)],
+    [statusButton, Markup.button.callback("🗑 Archive", `geni:archive:${link.id}`)],
+    [Markup.button.callback("🔗 Links", "geni:links"), Markup.button.callback("🧪 Dashboard", "geni:dashboard")]
+  ]);
+}
+
+function geniStatusIcon(status: GeniLink["status"]): string {
+  if (status === "active") return "🟢";
+  if (status === "paused") return "⏸";
+  return "⚫";
+}
+
+function geniStartUrl(linkId: string): string {
+  return new URL(`/geni/go/${encodeURIComponent(linkId)}`, publicBaseUrl()).toString();
+}
+
+function geniFinalUrl(linkId: string): string {
+  return new URL(`/geni/done/${encodeURIComponent(linkId)}`, publicBaseUrl()).toString();
 }
 
 function adminRoleIcon(role: AdminRole): string {
@@ -4985,6 +5438,16 @@ async function handleHttpRequest(request: IncomingMessage, response: ServerRespo
     return;
   }
 
+  if (requestUrl.pathname.startsWith("/geni/go/")) {
+    await handleGeniStart(request, response, requestUrl);
+    return;
+  }
+
+  if (requestUrl.pathname.startsWith("/geni/done/")) {
+    await handleGeniDone(request, response, requestUrl);
+    return;
+  }
+
   if (requestUrl.pathname === "/api/verify") {
     await handleApiVerification(request, response, requestUrl);
     return;
@@ -5107,6 +5570,161 @@ function normalizeFingerprint(value: string): string {
   return value.split(",")[0]?.trim().toLowerCase() || "unknown";
 }
 
+async function handleGeniStart(request: IncomingMessage, response: ServerResponse, requestUrl: URL) {
+  const linkId = pathTail(requestUrl.pathname, "/geni/go/");
+  const link = store.snapshot().geniLinks.find((item) => item.id === linkId);
+  if (!link || link.status === "archived") {
+    writeHtml(response, 404, renderGeniMessagePage("GENI link not found", "This experimental tracking link is not available."));
+    return;
+  }
+  if (link.status === "paused") {
+    writeHtml(response, 423, renderGeniMessagePage("GENI link paused", "This experimental tracking link is paused."));
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const visit: GeniVisit = {
+    id: compactId("gv"),
+    linkId: link.id,
+    sessionId: compactId("gs"),
+    status: "started",
+    ip: requestIp(request),
+    userAgent: String(request.headers["user-agent"] ?? "unknown").slice(0, 220),
+    referrer: String(request.headers.referer ?? request.headers.referrer ?? "").slice(0, 300) || undefined,
+    suspectReason: geniStartSuspectReason(request),
+    startedAt: now,
+    updatedAt: now
+  };
+  await store.upsertGeniVisit(visit);
+
+  const cookie = `geni_${link.id}=${visit.sessionId}; Max-Age=21600; Path=/geni; HttpOnly; SameSite=Lax; Secure`;
+  if (!link.shortenerUrl) {
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8", "set-cookie": cookie });
+    response.end(renderGeniMessagePage(
+      "GENI start tracked",
+      "Shortener URL is not set yet. Add the paid shortener URL from the admin panel.",
+      geniFinalUrl(link.id)
+    ));
+    return;
+  }
+
+  response.writeHead(302, {
+    location: link.shortenerUrl,
+    "set-cookie": cookie,
+    "cache-control": "no-store"
+  });
+  response.end();
+}
+
+async function handleGeniDone(request: IncomingMessage, response: ServerResponse, requestUrl: URL) {
+  const linkId = pathTail(requestUrl.pathname, "/geni/done/");
+  const link = store.snapshot().geniLinks.find((item) => item.id === linkId);
+  if (!link || link.status === "archived") {
+    writeHtml(response, 404, renderGeniMessagePage("GENI link not found", "This experimental tracking link is not available."));
+    return;
+  }
+
+  const sessionId = requestUrl.searchParams.get("sid") ?? cookieValue(request.headers.cookie, `geni_${link.id}`);
+  const state = store.snapshot();
+  const existing = sessionId
+    ? state.geniVisits.find((item) => item.linkId === link.id && item.sessionId === sessionId)
+    : undefined;
+  const now = new Date().toISOString();
+  const suspectReason = geniCompletionSuspectReason(request, link.id, existing);
+  const visit: GeniVisit = existing
+    ? {
+      ...existing,
+      status: "completed",
+      ip: existing.ip ?? requestIp(request),
+      userAgent: existing.userAgent ?? String(request.headers["user-agent"] ?? "unknown").slice(0, 220),
+      referrer: existing.referrer ?? (String(request.headers.referer ?? request.headers.referrer ?? "").slice(0, 300) || undefined),
+      suspectReason: existing.suspectReason ?? suspectReason,
+      completedAt: existing.completedAt ?? now,
+      updatedAt: now
+    }
+    : {
+      id: compactId("gv"),
+      linkId: link.id,
+      sessionId: sessionId ?? compactId("direct"),
+      status: "completed",
+      ip: requestIp(request),
+      userAgent: String(request.headers["user-agent"] ?? "unknown").slice(0, 220),
+      referrer: String(request.headers.referer ?? request.headers.referrer ?? "").slice(0, 300) || undefined,
+      suspectReason: suspectReason ?? "no_start_session",
+      startedAt: now,
+      completedAt: now,
+      updatedAt: now
+    };
+
+  await store.upsertGeniVisit(visit);
+  writeHtml(response, 200, renderGeniDonePage(link, visit));
+}
+
+async function handleGeniTelegramVerify(ctx: Context & { from: TelegramFrom }, payload: string) {
+  const visitId = payload.replace(/^geni_/, "");
+  const visit = store.snapshot().geniVisits.find((item) => item.id === visitId);
+  if (!visit) {
+    await ctx.reply("GENI visit not found or expired.");
+    return;
+  }
+
+  const link = store.snapshot().geniLinks.find((item) => item.id === visit.linkId);
+  const updated: GeniVisit = {
+    ...visit,
+    telegramUserId: ctx.from.id,
+    updatedAt: new Date().toISOString()
+  };
+  await store.upsertGeniVisit(updated);
+  await ctx.reply([
+    "🧪 GENI visit verified",
+    "",
+    `Link: ${link?.name ?? visit.linkId}`,
+    `Status: ${visit.status}`,
+    "Your Telegram account is now attached to this completed visit."
+  ].join("\n"));
+}
+
+function geniStartSuspectReason(request: IncomingMessage): string | undefined {
+  const userAgent = normalizeFingerprint(String(request.headers["user-agent"] ?? "unknown"));
+  if (userAgent.includes("bot") || userAgent.includes("crawler") || userAgent.includes("spider")) return "bot_user_agent";
+  return undefined;
+}
+
+function geniCompletionSuspectReason(request: IncomingMessage, linkId: string, existing?: GeniVisit): string | undefined {
+  if (!existing) return "no_start_session";
+  const userAgent = normalizeFingerprint(String(request.headers["user-agent"] ?? "unknown"));
+  if (userAgent.includes("bot") || userAgent.includes("crawler") || userAgent.includes("spider")) return "bot_user_agent";
+
+  const ip = normalizeFingerprint(existing.ip ?? requestIp(request));
+  if (ip !== "unknown") {
+    const sameIpCompleted = store.snapshot().geniVisits.filter((item) =>
+      item.linkId === linkId &&
+      item.status === "completed" &&
+      item.id !== existing.id &&
+      normalizeFingerprint(item.ip ?? "unknown") === ip
+    ).length;
+    if (sameIpCompleted >= 5) return "high_repeat_ip";
+  }
+
+  return existing.suspectReason;
+}
+
+function pathTail(pathname: string, prefix: string): string {
+  return decodeURIComponent(pathname.slice(prefix.length).split("/")[0] ?? "");
+}
+
+function requestIp(request: IncomingMessage): string {
+  return String(request.headers["x-forwarded-for"] ?? request.socket.remoteAddress ?? "unknown").split(",")[0].trim();
+}
+
+function cookieValue(cookieHeader: string | string[] | undefined, key: string): string | undefined {
+  const raw = Array.isArray(cookieHeader) ? cookieHeader.join(";") : cookieHeader;
+  if (!raw) return undefined;
+  const cookies = raw.split(";").map((item) => item.trim());
+  const pair = cookies.find((item) => item.startsWith(`${key}=`));
+  return pair ? decodeURIComponent(pair.slice(key.length + 1)) : undefined;
+}
+
 async function handleApiVerification(request: IncomingMessage, response: ServerResponse, requestUrl: URL) {
   if (request.method !== "POST") {
     writeJson(response, 405, { ok: false, error: "method_not_allowed" });
@@ -5185,8 +5803,71 @@ function writeJson(response: ServerResponse, status: number, body: Record<string
   response.end(JSON.stringify(body));
 }
 
+function writeHtml(response: ServerResponse, status: number, html: string) {
+  response.writeHead(status, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+  response.end(html);
+}
+
 function stringOrUndefined(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function renderGeniDonePage(link: GeniLink, visit: GeniVisit): string {
+  const verifyUrl = telegramBotStartUrl(`geni_${visit.id}`);
+  const verifyButton = verifyUrl
+    ? `<a class="button" href="${escapeHtml(verifyUrl)}">Verify in Telegram</a>`
+    : "";
+  const suspect = visit.suspectReason
+    ? `<p class="warn">Flag: ${escapeHtml(visit.suspectReason)}</p>`
+    : "";
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GENI Visit Completed</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; min-height: 100vh; display: grid; place-items: center; background: #101827; color: #f8fafc; }
+    main { width: min(560px, calc(100vw - 32px)); text-align: center; }
+    .panel { border: 1px solid #263449; border-radius: 12px; padding: 28px; background: #142033; }
+    .button { display: inline-block; margin-top: 18px; padding: 12px 18px; border-radius: 8px; background: #38bdf8; color: #082f49; text-decoration: none; font-weight: 700; }
+    .muted { color: #cbd5e1; }
+    .warn { color: #fbbf24; }
+  </style>
+</head>
+<body>
+  <main class="panel">
+    <h1>GENI Visit Completed</h1>
+    <p class="muted">${escapeHtml(link.name)}</p>
+    <p>Your final URL visit has been recorded.</p>
+    ${suspect}
+    ${verifyButton}
+  </main>
+</body>
+</html>`;
+}
+
+function renderGeniMessagePage(title: string, message: string, detail?: string): string {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${escapeHtml(title)}</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; min-height: 100vh; display: grid; place-items: center; background: #101827; color: #f8fafc; }
+    main { width: min(560px, calc(100vw - 32px)); text-align: center; }
+    code { display: block; margin-top: 18px; padding: 12px; overflow-wrap: anywhere; background: #0f172a; border-radius: 8px; color: #bfdbfe; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>${escapeHtml(title)}</h1>
+    <p>${escapeHtml(message)}</p>
+    ${detail ? `<code>${escapeHtml(detail)}</code>` : ""}
+  </main>
+</body>
+</html>`;
 }
 
 function renderTimerPage(input: { seconds: number; completeUrl: string; targetUrl?: string }): string {
@@ -5251,6 +5932,12 @@ function publicBaseUrl(): string {
   if (config.publicUrl) return normalizeBaseUrl(config.publicUrl);
   if (process.env.RAILWAY_PUBLIC_DOMAIN) return `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`;
   return `http://localhost:${config.port}`;
+}
+
+function telegramBotStartUrl(payload: string): string | undefined {
+  const username = bot.botInfo?.username;
+  if (!username) return undefined;
+  return `https://t.me/${username}?start=${encodeURIComponent(payload)}`;
 }
 
 function requestPublicBaseUrl(request: IncomingMessage): string {

@@ -7,6 +7,8 @@ import type {
   AdminPanelMessage,
   DepositRequest,
   Dispute,
+  GeniLink,
+  GeniVisit,
   StoreState,
   Referral,
   Submission,
@@ -39,7 +41,9 @@ const emptyState = (): StoreState => ({
   telegramMemberships: [],
   adminPanelMessages: [],
   adminMembers: [],
-  adminAuditEvents: []
+  adminAuditEvents: [],
+  geniLinks: [],
+  geniVisits: []
 });
 
 export interface NeosenceStore {
@@ -67,6 +71,8 @@ export interface NeosenceStore {
   upsertAdminPanelMessage(message: AdminPanelMessage): Promise<void>;
   upsertAdminMember(member: AdminMember): Promise<void>;
   addAdminAuditEvent(event: AdminAuditEvent): Promise<void>;
+  upsertGeniLink(link: GeniLink): Promise<void>;
+  upsertGeniVisit(visit: GeniVisit): Promise<void>;
 }
 
 abstract class CachedStore implements NeosenceStore {
@@ -211,6 +217,20 @@ abstract class CachedStore implements NeosenceStore {
 
   async addAdminAuditEvent(event: AdminAuditEvent): Promise<void> {
     this.state.adminAuditEvents.push(event);
+    await this.save();
+  }
+
+  async upsertGeniLink(link: GeniLink): Promise<void> {
+    const index = this.state.geniLinks.findIndex((item) => item.id === link.id);
+    if (index >= 0) this.state.geniLinks[index] = link;
+    else this.state.geniLinks.push(link);
+    await this.save();
+  }
+
+  async upsertGeniVisit(visit: GeniVisit): Promise<void> {
+    const index = this.state.geniVisits.findIndex((item) => item.id === visit.id);
+    if (index >= 0) this.state.geniVisits[index] = visit;
+    else this.state.geniVisits.push(visit);
     await this.save();
   }
 }

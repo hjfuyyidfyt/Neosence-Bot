@@ -228,6 +228,33 @@ export interface AdminAuditEvent {
   createdAt: string;
 }
 
+export type GeniLinkStatus = "active" | "paused" | "archived";
+
+export interface GeniLink {
+  id: string;
+  name: string;
+  adminId: number;
+  status: GeniLinkStatus;
+  shortenerUrl?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface GeniVisit {
+  id: string;
+  linkId: string;
+  sessionId: string;
+  status: "started" | "completed";
+  telegramUserId?: number;
+  ip?: string;
+  userAgent?: string;
+  referrer?: string;
+  suspectReason?: string;
+  startedAt: string;
+  completedAt?: string;
+  updatedAt: string;
+}
+
 export interface StoreState {
   users: UserProfile[];
   tasks: Task[];
@@ -245,6 +272,8 @@ export interface StoreState {
   adminPanelMessages: AdminPanelMessage[];
   adminMembers: AdminMember[];
   adminAuditEvents: AdminAuditEvent[];
+  geniLinks: GeniLink[];
+  geniVisits: GeniVisit[];
 }
 
 export interface ApiVerificationPayload {
