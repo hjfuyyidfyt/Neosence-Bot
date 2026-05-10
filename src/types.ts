@@ -248,10 +248,25 @@ export interface GeniVisit {
   telegramUserId?: number;
   ip?: string;
   userAgent?: string;
+  country?: string;
+  deviceType?: string;
+  browser?: string;
   referrer?: string;
   suspectReason?: string;
   startedAt: string;
   completedAt?: string;
+  updatedAt: string;
+}
+
+export interface GeniSettings {
+  profitCpmUsd: number;
+  trafficCostPerVisitUsd: number;
+  plannedVisits: number;
+  expectedCompletionRate: number;
+  sameIpLimit: number;
+  sameDeviceLimit: number;
+  blockBotUserAgents: boolean;
+  flagDirectFinalHits: boolean;
   updatedAt: string;
 }
 
@@ -274,6 +289,7 @@ export interface StoreState {
   adminAuditEvents: AdminAuditEvent[];
   geniLinks: GeniLink[];
   geniVisits: GeniVisit[];
+  geniSettings: GeniSettings;
 }
 
 export interface ApiVerificationPayload {

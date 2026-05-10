@@ -8,6 +8,7 @@ import type {
   DepositRequest,
   Dispute,
   GeniLink,
+  GeniSettings,
   GeniVisit,
   StoreState,
   Referral,
@@ -24,6 +25,18 @@ import type {
 } from "./types.js";
 
 const { Pool } = pg;
+
+const defaultGeniSettings = (): GeniSettings => ({
+  profitCpmUsd: 2,
+  trafficCostPerVisitUsd: 0,
+  plannedVisits: 1000,
+  expectedCompletionRate: 60,
+  sameIpLimit: 5,
+  sameDeviceLimit: 8,
+  blockBotUserAgents: true,
+  flagDirectFinalHits: true,
+  updatedAt: new Date(0).toISOString()
+});
 
 const emptyState = (): StoreState => ({
   users: [],
@@ -43,7 +56,8 @@ const emptyState = (): StoreState => ({
   adminMembers: [],
   adminAuditEvents: [],
   geniLinks: [],
-  geniVisits: []
+  geniVisits: [],
+  geniSettings: defaultGeniSettings()
 });
 
 export interface NeosenceStore {
@@ -73,6 +87,7 @@ export interface NeosenceStore {
   addAdminAuditEvent(event: AdminAuditEvent): Promise<void>;
   upsertGeniLink(link: GeniLink): Promise<void>;
   upsertGeniVisit(visit: GeniVisit): Promise<void>;
+  updateGeniSettings(settings: GeniSettings): Promise<void>;
 }
 
 abstract class CachedStore implements NeosenceStore {
@@ -231,6 +246,11 @@ abstract class CachedStore implements NeosenceStore {
     const index = this.state.geniVisits.findIndex((item) => item.id === visit.id);
     if (index >= 0) this.state.geniVisits[index] = visit;
     else this.state.geniVisits.push(visit);
+    await this.save();
+  }
+
+  async updateGeniSettings(settings: GeniSettings): Promise<void> {
+    this.state.geniSettings = settings;
     await this.save();
   }
 }

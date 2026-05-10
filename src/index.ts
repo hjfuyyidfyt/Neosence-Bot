@@ -36,6 +36,7 @@ import type {
   DepositRequest,
   Dispute,
   GeniLink,
+  GeniSettings,
   GeniVisit,
   PayoutMethodType,
   Submission,
@@ -102,7 +103,7 @@ interface TaskDraft {
 }
 
 const taskDrafts = new Map<number, TaskDraft>();
-type GeniDraftStep = "name" | "shortener";
+type GeniDraftStep = "name" | "shortener" | "profit";
 
 interface GeniDraft {
   step: GeniDraftStep;
@@ -1293,6 +1294,59 @@ bot.action("geni:logs", async (ctx) => {
   if (!(await requireAdminPanelCallback(ctx, "geni"))) return;
   await ctx.answerCbQuery();
   await showScreen(ctx, formatGeniLogs(), geniDashboardKeyboard());
+});
+
+bot.action("geni:profit", async (ctx) => {
+  if (!(await requireAdminPanelCallback(ctx, "geni"))) return;
+  await ctx.answerCbQuery();
+  await showScreen(ctx, formatGeniProfitCalculator(), geniProfitKeyboard());
+});
+
+bot.action("geni:profit:edit", async (ctx) => {
+  if (!(await requireAdminPanelCallback(ctx, "geni"))) return;
+  await ctx.answerCbQuery();
+  setGeniDraft(ctx.from.id, { step: "profit" });
+  await showScreen(ctx, [
+    "💹 GENI Profit Calculator",
+    "",
+    "Send 4 numbers:",
+    "CPM_USD cost_per_visit_USD planned_visits completion_rate_percent",
+    "",
+    "Example:",
+    "3.5 0.001 10000 60"
+  ].join("\n"), geniProfitKeyboard());
+});
+
+bot.action("geni:fraud", async (ctx) => {
+  if (!(await requireAdminPanelCallback(ctx, "geni"))) return;
+  await ctx.answerCbQuery();
+  await showScreen(ctx, formatGeniFraudSettings(), geniFraudKeyboard());
+});
+
+bot.action(/^geni:fraud:(ip|device):(up|down)$/, async (ctx) => {
+  if (!(await requireAdminPanelCallback(ctx, "geni"))) return;
+  const settings = geniSettings();
+  const key = ctx.match[1] === "ip" ? "sameIpLimit" : "sameDeviceLimit";
+  const delta = ctx.match[2] === "up" ? 1 : -1;
+  const updated: GeniSettings = {
+    ...settings,
+    [key]: Math.max(1, Math.min(50, settings[key] + delta)),
+    updatedAt: new Date().toISOString()
+  };
+  await store.updateGeniSettings(updated);
+  await ctx.answerCbQuery("Fraud setting updated.");
+  await showScreen(ctx, formatGeniFraudSettings(), geniFraudKeyboard());
+});
+
+bot.action(/^geni:fraud:(bot|direct):toggle$/, async (ctx) => {
+  if (!(await requireAdminPanelCallback(ctx, "geni"))) return;
+  const settings = geniSettings();
+  const updated: GeniSettings = ctx.match[1] === "bot"
+    ? { ...settings, blockBotUserAgents: !settings.blockBotUserAgents, updatedAt: new Date().toISOString() }
+    : { ...settings, flagDirectFinalHits: !settings.flagDirectFinalHits, updatedAt: new Date().toISOString() };
+  await store.updateGeniSettings(updated);
+  await ctx.answerCbQuery("Fraud setting updated.");
+  await showScreen(ctx, formatGeniFraudSettings(), geniFraudKeyboard());
 });
 
 bot.action("geni:cancel", async (ctx) => {
@@ -4063,6 +4117,37 @@ async function handleGeniDraftMessage(ctx: Context & { from: TelegramFrom; messa
     });
     geniDrafts.delete(ctx.from.id);
     await showFlowScreen(ctx, formatGeniLinkDetail(updated), geniLinkKeyboard(updated));
+    return;
+  }
+
+  if (draft.step === "profit") {
+    const parsed = parseGeniProfitInput(text);
+    if (!parsed) {
+      await showFlowScreen(ctx, [
+        "Invalid calculator input.",
+        "",
+        "Send 4 numbers:",
+        "CPM_USD cost_per_visit_USD planned_visits completion_rate_percent",
+        "",
+        "Example: 3.5 0.001 10000 60"
+      ].join("\n"), geniProfitKeyboard());
+      return;
+    }
+
+    const settings: GeniSettings = {
+      ...geniSettings(),
+      ...parsed,
+      updatedAt: new Date().toISOString()
+    };
+    await store.updateGeniSettings(settings);
+    await addAdminAudit({
+      adminId: ctx.from.id,
+      action: "geni_profit_settings",
+      targetType: "geni",
+      note: `CPM ${settings.profitCpmUsd}, cost ${settings.trafficCostPerVisitUsd}, visits ${settings.plannedVisits}, completion ${settings.expectedCompletionRate}%`
+    });
+    geniDrafts.delete(ctx.from.id);
+    await showFlowScreen(ctx, formatGeniProfitCalculator(), geniProfitKeyboard());
   }
 }
 
@@ -4073,6 +4158,47 @@ function assertHttpUrl(value: string) {
   } catch {
     throw new Error("Invalid URL.");
   }
+}
+
+function geniSettings(): GeniSettings {
+  return store.snapshot().geniSettings ?? {
+    profitCpmUsd: 2,
+    trafficCostPerVisitUsd: 0,
+    plannedVisits: 1000,
+    expectedCompletionRate: 60,
+    sameIpLimit: 5,
+    sameDeviceLimit: 8,
+    blockBotUserAgents: true,
+    flagDirectFinalHits: true,
+    updatedAt: new Date(0).toISOString()
+  };
+}
+
+function parseGeniProfitInput(text: string): Pick<GeniSettings, "profitCpmUsd" | "trafficCostPerVisitUsd" | "plannedVisits" | "expectedCompletionRate"> | undefined {
+  const parts = text.replace(/,/g, " ").split(/\s+/).filter(Boolean).map(Number);
+  if (parts.length < 4 || parts.some((item) => !Number.isFinite(item))) return undefined;
+  const [profitCpmUsd, trafficCostPerVisitUsd, plannedVisitsRaw, expectedCompletionRate] = parts;
+  const plannedVisits = Math.round(plannedVisitsRaw);
+  if (profitCpmUsd < 0 || trafficCostPerVisitUsd < 0 || plannedVisits <= 0 || expectedCompletionRate < 0 || expectedCompletionRate > 100) {
+    return undefined;
+  }
+  return {
+    profitCpmUsd: roundTo(profitCpmUsd, 4),
+    trafficCostPerVisitUsd: roundTo(trafficCostPerVisitUsd, 6),
+    plannedVisits,
+    expectedCompletionRate: roundTo(expectedCompletionRate, 2)
+  };
+}
+
+function roundTo(value: number, digits: number): number {
+  const factor = 10 ** digits;
+  return Math.round(value * factor) / factor;
+}
+
+function formatUsd(value: number): string {
+  const abs = Math.abs(value);
+  const digits = abs < 1 ? 4 : 2;
+  return `${value < 0 ? "-" : ""}$${abs.toFixed(digits)}`;
 }
 
 function geniStats(linkId?: string) {
@@ -4087,6 +4213,7 @@ function geniStats(linkId?: string) {
   const todayPrefix = new Date().toISOString().slice(0, 10);
   const todayStarted = visits.filter((visit) => visit.startedAt.startsWith(todayPrefix)).length;
   const todayCompleted = visits.filter((visit) => visit.completedAt?.startsWith(todayPrefix)).length;
+  const completedVisits = visits.filter((visit) => visit.status === "completed");
   return {
     started,
     completed,
@@ -4095,8 +4222,28 @@ function geniStats(linkId?: string) {
     directFinal,
     todayStarted,
     todayCompleted,
+    countries: topCounts(completedVisits.map((visit) => visit.country ?? "Unknown")),
+    devices: topCounts(completedVisits.map((visit) => visit.deviceType ?? "Unknown")),
+    browsers: topCounts(completedVisits.map((visit) => visit.browser ?? "Unknown")),
     completionRate: started > 0 ? Math.round((completed / started) * 100) : 0
   };
+}
+
+function topCounts(values: string[], limit = 5): Array<{ label: string; count: number }> {
+  const counts = new Map<string, number>();
+  for (const value of values) {
+    const label = value || "Unknown";
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .slice(0, limit)
+    .map(([label, count]) => ({ label, count }));
+}
+
+function formatTopCounts(items: Array<{ label: string; count: number }>): string {
+  if (items.length === 0) return "No data yet.";
+  return items.map((item) => `${item.label}: ${item.count}`).join("\n");
 }
 
 function formatGeniDashboard(): string {
@@ -4125,7 +4272,8 @@ function formatGeniDashboard(): string {
 function geniDashboardKeyboard() {
   return Markup.inlineKeyboard([
     [Markup.button.callback("➕ New Link", "geni:new"), Markup.button.callback("🔗 Links", "geni:links")],
-    [Markup.button.callback("📊 Analytics", "geni:analytics"), Markup.button.callback("🧾 Logs", "geni:logs")],
+    [Markup.button.callback("📊 Analytics", "geni:analytics"), Markup.button.callback("💹 Profit", "geni:profit")],
+    [Markup.button.callback("🛡 Fraud", "geni:fraud"), Markup.button.callback("🧾 Logs", "geni:logs")],
     [Markup.button.callback("⬅️ Admin Panel", "admin:dashboard")]
   ]);
 }
@@ -4179,12 +4327,93 @@ function formatGeniAnalytics(): string {
     `Direct final hits: ${stats.directFinal}`,
     `Suspect: ${stats.suspect}`,
     "",
+    "Top countries:",
+    formatTopCounts(stats.countries),
+    "",
+    "Top devices:",
+    formatTopCounts(stats.devices),
+    "",
+    "Top browsers:",
+    formatTopCounts(stats.browsers),
+    "",
     "Top links:",
     ...(topLinks.length > 0 ? topLinks.map((link) => {
       const itemStats = geniStats(link.id);
       return `${link.name}: ${itemStats.completed}/${itemStats.started} (${itemStats.completionRate}%)`;
     }) : ["No data yet."])
   ].join("\n");
+}
+
+function formatGeniProfitCalculator(): string {
+  const settings = geniSettings();
+  const actual = geniStats();
+  const projectedCompleted = Math.round(settings.plannedVisits * (settings.expectedCompletionRate / 100));
+  const projectedIncome = (projectedCompleted / 1000) * settings.profitCpmUsd;
+  const projectedCost = settings.plannedVisits * settings.trafficCostPerVisitUsd;
+  const projectedProfit = projectedIncome - projectedCost;
+  const actualIncome = (actual.completed / 1000) * settings.profitCpmUsd;
+  const actualCost = actual.started * settings.trafficCostPerVisitUsd;
+  const actualProfit = actualIncome - actualCost;
+  const breakEvenCost = (settings.profitCpmUsd * (settings.expectedCompletionRate / 100)) / 1000;
+
+  return [
+    "💹 GENI Profit Calculator",
+    "",
+    "Assumptions:",
+    `CPM: ${formatUsd(settings.profitCpmUsd)}`,
+    `Traffic cost/visit: ${formatUsd(settings.trafficCostPerVisitUsd)}`,
+    `Planned visits: ${settings.plannedVisits}`,
+    `Expected completion: ${settings.expectedCompletionRate}%`,
+    "",
+    "Projection:",
+    `Completed visits: ${projectedCompleted}`,
+    `Income: ${formatUsd(projectedIncome)}`,
+    `Cost: ${formatUsd(projectedCost)}`,
+    `Profit: ${formatUsd(projectedProfit)}`,
+    `Break-even cost/visit: ${formatUsd(breakEvenCost)}`,
+    "",
+    "Actual GENI data:",
+    `Started: ${actual.started}`,
+    `Completed: ${actual.completed}`,
+    `Estimated income: ${formatUsd(actualIncome)}`,
+    `Estimated cost: ${formatUsd(actualCost)}`,
+    `Estimated profit: ${formatUsd(actualProfit)}`,
+    "",
+    "Edit format:",
+    "CPM cost_per_visit planned_visits completion_rate"
+  ].join("\n");
+}
+
+function geniProfitKeyboard() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("✏️ Edit Assumptions", "geni:profit:edit")],
+    [Markup.button.callback("📊 Analytics", "geni:analytics"), Markup.button.callback("🧪 Dashboard", "geni:dashboard")]
+  ]);
+}
+
+function formatGeniFraudSettings(): string {
+  const settings = geniSettings();
+  return [
+    "🛡 GENI Fraud Tuning",
+    "",
+    `Same IP limit: ${settings.sameIpLimit}`,
+    `Same device limit: ${settings.sameDeviceLimit}`,
+    `Block bot user-agents: ${settings.blockBotUserAgents ? "on" : "off"}`,
+    `Flag direct final hits: ${settings.flagDirectFinalHits ? "on" : "off"}`,
+    "",
+    "Current traffic flags use these limits instantly for new visits."
+  ].join("\n");
+}
+
+function geniFraudKeyboard() {
+  const settings = geniSettings();
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("IP -", "geni:fraud:ip:down"), Markup.button.callback(`IP ${settings.sameIpLimit}`, "noop"), Markup.button.callback("IP +", "geni:fraud:ip:up")],
+    [Markup.button.callback("Device -", "geni:fraud:device:down"), Markup.button.callback(`Device ${settings.sameDeviceLimit}`, "noop"), Markup.button.callback("Device +", "geni:fraud:device:up")],
+    [Markup.button.callback(`Bot UA: ${settings.blockBotUserAgents ? "on" : "off"}`, "geni:fraud:bot:toggle")],
+    [Markup.button.callback(`Direct final: ${settings.flagDirectFinalHits ? "flag" : "allow"}`, "geni:fraud:direct:toggle")],
+    [Markup.button.callback("🧪 Dashboard", "geni:dashboard")]
+  ]);
 }
 
 function formatGeniLogs(): string {
@@ -4199,6 +4428,7 @@ function formatGeniLogs(): string {
       `${visit.status.toUpperCase()} • ${links.get(visit.linkId)?.name ?? visit.linkId}`,
       `Visit: ${shortId(visit.id)}`,
       visit.telegramUserId ? `Telegram: ${visit.telegramUserId}` : undefined,
+      `Country/device: ${visit.country ?? "Unknown"} / ${visit.deviceType ?? "Unknown"}`,
       visit.suspectReason ? `Flag: ${visit.suspectReason}` : undefined,
       `Time: ${formatDateTime(visit.updatedAt)}`
     ].filter(Boolean).join("\n"))
@@ -4219,6 +4449,12 @@ function formatGeniLinkDetail(link: GeniLink): string {
     `Completion rate: ${stats.completionRate}%`,
     `Telegram verified: ${stats.telegramVerified}`,
     `Suspect: ${stats.suspect}`,
+    "",
+    "Top countries:",
+    formatTopCounts(stats.countries),
+    "",
+    "Top devices:",
+    formatTopCounts(stats.devices),
     "",
     `Shortener: ${link.shortenerUrl ?? "not set"}`,
     "",
@@ -5583,13 +5819,18 @@ async function handleGeniStart(request: IncomingMessage, response: ServerRespons
   }
 
   const now = new Date().toISOString();
+  const userAgent = String(request.headers["user-agent"] ?? "unknown").slice(0, 220);
+  const deviceInfo = deviceInfoFromUserAgent(userAgent);
   const visit: GeniVisit = {
     id: compactId("gv"),
     linkId: link.id,
     sessionId: compactId("gs"),
     status: "started",
     ip: requestIp(request),
-    userAgent: String(request.headers["user-agent"] ?? "unknown").slice(0, 220),
+    userAgent,
+    country: countryFromRequest(request),
+    deviceType: deviceInfo.deviceType,
+    browser: deviceInfo.browser,
     referrer: String(request.headers.referer ?? request.headers.referrer ?? "").slice(0, 300) || undefined,
     suspectReason: geniStartSuspectReason(request),
     startedAt: now,
@@ -5631,12 +5872,17 @@ async function handleGeniDone(request: IncomingMessage, response: ServerResponse
     : undefined;
   const now = new Date().toISOString();
   const suspectReason = geniCompletionSuspectReason(request, link.id, existing);
+  const userAgent = String(request.headers["user-agent"] ?? "unknown").slice(0, 220);
+  const deviceInfo = deviceInfoFromUserAgent(userAgent);
   const visit: GeniVisit = existing
     ? {
       ...existing,
       status: "completed",
       ip: existing.ip ?? requestIp(request),
-      userAgent: existing.userAgent ?? String(request.headers["user-agent"] ?? "unknown").slice(0, 220),
+      userAgent: existing.userAgent ?? userAgent,
+      country: existing.country ?? countryFromRequest(request),
+      deviceType: existing.deviceType ?? deviceInfo.deviceType,
+      browser: existing.browser ?? deviceInfo.browser,
       referrer: existing.referrer ?? (String(request.headers.referer ?? request.headers.referrer ?? "").slice(0, 300) || undefined),
       suspectReason: existing.suspectReason ?? suspectReason,
       completedAt: existing.completedAt ?? now,
@@ -5648,7 +5894,10 @@ async function handleGeniDone(request: IncomingMessage, response: ServerResponse
       sessionId: sessionId ?? compactId("direct"),
       status: "completed",
       ip: requestIp(request),
-      userAgent: String(request.headers["user-agent"] ?? "unknown").slice(0, 220),
+      userAgent,
+      country: countryFromRequest(request),
+      deviceType: deviceInfo.deviceType,
+      browser: deviceInfo.browser,
       referrer: String(request.headers.referer ?? request.headers.referrer ?? "").slice(0, 300) || undefined,
       suspectReason: suspectReason ?? "no_start_session",
       startedAt: now,
@@ -5685,15 +5934,17 @@ async function handleGeniTelegramVerify(ctx: Context & { from: TelegramFrom }, p
 }
 
 function geniStartSuspectReason(request: IncomingMessage): string | undefined {
+  const settings = geniSettings();
   const userAgent = normalizeFingerprint(String(request.headers["user-agent"] ?? "unknown"));
-  if (userAgent.includes("bot") || userAgent.includes("crawler") || userAgent.includes("spider")) return "bot_user_agent";
+  if (settings.blockBotUserAgents && isBotUserAgent(userAgent)) return "bot_user_agent";
   return undefined;
 }
 
 function geniCompletionSuspectReason(request: IncomingMessage, linkId: string, existing?: GeniVisit): string | undefined {
-  if (!existing) return "no_start_session";
+  const settings = geniSettings();
+  if (!existing) return settings.flagDirectFinalHits ? "no_start_session" : undefined;
   const userAgent = normalizeFingerprint(String(request.headers["user-agent"] ?? "unknown"));
-  if (userAgent.includes("bot") || userAgent.includes("crawler") || userAgent.includes("spider")) return "bot_user_agent";
+  if (settings.blockBotUserAgents && isBotUserAgent(userAgent)) return "bot_user_agent";
 
   const ip = normalizeFingerprint(existing.ip ?? requestIp(request));
   if (ip !== "unknown") {
@@ -5703,10 +5954,25 @@ function geniCompletionSuspectReason(request: IncomingMessage, linkId: string, e
       item.id !== existing.id &&
       normalizeFingerprint(item.ip ?? "unknown") === ip
     ).length;
-    if (sameIpCompleted >= 5) return "high_repeat_ip";
+    if (sameIpCompleted >= settings.sameIpLimit) return "high_repeat_ip";
+  }
+
+  const normalizedDevice = normalizeFingerprint(existing.userAgent ?? userAgent);
+  if (normalizedDevice !== "unknown") {
+    const sameDeviceCompleted = store.snapshot().geniVisits.filter((item) =>
+      item.linkId === linkId &&
+      item.status === "completed" &&
+      item.id !== existing.id &&
+      normalizeFingerprint(item.userAgent ?? "unknown") === normalizedDevice
+    ).length;
+    if (sameDeviceCompleted >= settings.sameDeviceLimit) return "high_repeat_device";
   }
 
   return existing.suspectReason;
+}
+
+function isBotUserAgent(userAgent: string): boolean {
+  return userAgent.includes("bot") || userAgent.includes("crawler") || userAgent.includes("spider") || userAgent.includes("headless");
 }
 
 function pathTail(pathname: string, prefix: string): string {
@@ -5715,6 +5981,43 @@ function pathTail(pathname: string, prefix: string): string {
 
 function requestIp(request: IncomingMessage): string {
   return String(request.headers["x-forwarded-for"] ?? request.socket.remoteAddress ?? "unknown").split(",")[0].trim();
+}
+
+function countryFromRequest(request: IncomingMessage): string {
+  const raw = String(
+    request.headers["cf-ipcountry"] ??
+    request.headers["x-vercel-ip-country"] ??
+    request.headers["cloudfront-viewer-country"] ??
+    request.headers["x-country-code"] ??
+    ""
+  ).split(",")[0].trim().toUpperCase();
+  if (!raw || raw === "XX") return "Unknown";
+  return raw.slice(0, 3);
+}
+
+function deviceInfoFromUserAgent(userAgent: string): { deviceType: string; browser: string } {
+  const normalized = userAgent.toLowerCase();
+  const deviceType = isBotUserAgent(normalized)
+    ? "Bot"
+    : normalized.includes("ipad") || normalized.includes("tablet")
+      ? "Tablet"
+      : normalized.includes("mobile") || normalized.includes("android") || normalized.includes("iphone")
+        ? "Mobile"
+        : "Desktop";
+  const browser = normalized.includes("edg/")
+    ? "Edge"
+    : normalized.includes("opr/") || normalized.includes("opera")
+      ? "Opera"
+      : normalized.includes("firefox/")
+        ? "Firefox"
+        : normalized.includes("safari/") && !normalized.includes("chrome/")
+          ? "Safari"
+          : normalized.includes("chrome/") || normalized.includes("chromium/")
+            ? "Chrome"
+            : isBotUserAgent(normalized)
+              ? "Bot"
+              : "Other";
+  return { deviceType, browser };
 }
 
 function cookieValue(cookieHeader: string | string[] | undefined, key: string): string | undefined {
@@ -5818,28 +6121,43 @@ function renderGeniDonePage(link: GeniLink, visit: GeniVisit): string {
     ? `<a class="button" href="${escapeHtml(verifyUrl)}">Verify in Telegram</a>`
     : "";
   const suspect = visit.suspectReason
-    ? `<p class="warn">Flag: ${escapeHtml(visit.suspectReason)}</p>`
+    ? `<p class="notice">Review flag: ${escapeHtml(visit.suspectReason)}</p>`
     : "";
   return `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>GENI Visit Completed</title>
+  <title>Neosence GENI</title>
   <style>
-    body { font-family: Arial, sans-serif; margin: 0; min-height: 100vh; display: grid; place-items: center; background: #101827; color: #f8fafc; }
-    main { width: min(560px, calc(100vw - 32px)); text-align: center; }
-    .panel { border: 1px solid #263449; border-radius: 12px; padding: 28px; background: #142033; }
-    .button { display: inline-block; margin-top: 18px; padding: 12px 18px; border-radius: 8px; background: #38bdf8; color: #082f49; text-decoration: none; font-weight: 700; }
-    .muted { color: #cbd5e1; }
-    .warn { color: #fbbf24; }
+    :root { color-scheme: light; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f6f3ee; color: #1f2933; font-family: Arial, sans-serif; }
+    main { width: min(620px, calc(100vw - 32px)); }
+    .panel { border: 1px solid #d8d4cc; border-radius: 10px; padding: 30px; background: #fffdfa; box-shadow: 0 12px 34px rgba(31, 41, 51, 0.10); }
+    .brand { font-size: 14px; font-weight: 700; letter-spacing: 0; color: #0f766e; margin-bottom: 18px; }
+    h1 { margin: 0 0 12px; font-size: 30px; line-height: 1.15; letter-spacing: 0; }
+    p { margin: 0 0 14px; line-height: 1.55; }
+    .meta { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 18px 0; }
+    .item { border: 1px solid #e6e1d8; border-radius: 8px; padding: 12px; background: #fbf8f2; }
+    .label { display: block; color: #68737d; font-size: 12px; margin-bottom: 4px; }
+    .value { font-weight: 700; overflow-wrap: anywhere; }
+    .button { display: inline-block; margin-top: 8px; padding: 12px 18px; border-radius: 8px; background: #0f766e; color: #ffffff; text-decoration: none; font-weight: 700; }
+    .notice { color: #92400e; background: #fff7ed; border: 1px solid #fed7aa; border-radius: 8px; padding: 10px 12px; }
+    @media (max-width: 520px) { .panel { padding: 22px; } .meta { grid-template-columns: 1fr; } h1 { font-size: 26px; } }
   </style>
 </head>
 <body>
   <main class="panel">
-    <h1>GENI Visit Completed</h1>
-    <p class="muted">${escapeHtml(link.name)}</p>
-    <p>Your final URL visit has been recorded.</p>
+    <div class="brand">Neosence GENI</div>
+    <h1>Visit Recorded</h1>
+    <p>Your visit reached the final destination page.</p>
+    <div class="meta">
+      <div class="item"><span class="label">Link</span><span class="value">${escapeHtml(link.name)}</span></div>
+      <div class="item"><span class="label">Visit</span><span class="value">${escapeHtml(shortId(visit.id))}</span></div>
+      <div class="item"><span class="label">Country</span><span class="value">${escapeHtml(visit.country ?? "Unknown")}</span></div>
+      <div class="item"><span class="label">Device</span><span class="value">${escapeHtml(visit.deviceType ?? "Unknown")}</span></div>
+    </div>
     ${suspect}
     ${verifyButton}
   </main>
@@ -5855,13 +6173,17 @@ function renderGeniMessagePage(title: string, message: string, detail?: string):
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>${escapeHtml(title)}</title>
   <style>
-    body { font-family: Arial, sans-serif; margin: 0; min-height: 100vh; display: grid; place-items: center; background: #101827; color: #f8fafc; }
-    main { width: min(560px, calc(100vw - 32px)); text-align: center; }
-    code { display: block; margin-top: 18px; padding: 12px; overflow-wrap: anywhere; background: #0f172a; border-radius: 8px; color: #bfdbfe; }
+    body { font-family: Arial, sans-serif; margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f6f3ee; color: #1f2933; }
+    main { width: min(560px, calc(100vw - 32px)); border: 1px solid #d8d4cc; border-radius: 10px; padding: 28px; background: #fffdfa; box-shadow: 0 12px 34px rgba(31, 41, 51, 0.10); }
+    .brand { color: #0f766e; font-weight: 700; margin-bottom: 16px; }
+    h1 { margin: 0 0 12px; letter-spacing: 0; }
+    p { line-height: 1.55; }
+    code { display: block; margin-top: 18px; padding: 12px; overflow-wrap: anywhere; background: #fbf8f2; border: 1px solid #e6e1d8; border-radius: 8px; color: #0f766e; }
   </style>
 </head>
 <body>
   <main>
+    <div class="brand">Neosence GENI</div>
     <h1>${escapeHtml(title)}</h1>
     <p>${escapeHtml(message)}</p>
     ${detail ? `<code>${escapeHtml(detail)}</code>` : ""}
