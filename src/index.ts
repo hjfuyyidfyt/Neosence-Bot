@@ -1356,7 +1356,7 @@ bot.action("geni:profit:edit", async (ctx) => {
   await ctx.answerCbQuery();
   setGeniDraft(ctx.from.id, { step: "profit_cpm" });
   await showScreen(ctx, [
-    "💹 Profit Check",
+    "💹 Profit Calculator",
     "",
     "Step 1 of 4",
     "Shortener CPM koto?",
@@ -1370,6 +1370,32 @@ bot.action("geni:fraud", async (ctx) => {
   if (!(await requireAdminPanelCallback(ctx, "geni"))) return;
   await ctx.answerCbQuery();
   await showScreen(ctx, formatGeniFraudSettings(), geniFraudKeyboard());
+});
+
+bot.action("geni:clear", async (ctx) => {
+  if (!(await requireAdminPanelCallback(ctx, "geni"))) return;
+  await ctx.answerCbQuery();
+  await showScreen(ctx, [
+    "🧹 Clear GENI Test Data",
+    "",
+    "This will delete GENI click/completion logs only.",
+    "Links and settings will stay.",
+    "",
+    "Use this after testing if old test visits make the dashboard confusing."
+  ].join("\n"), geniClearConfirmKeyboard());
+});
+
+bot.action("geni:clear:confirm", async (ctx) => {
+  if (!(await requireAdminPanelCallback(ctx, "geni"))) return;
+  await store.clearGeniVisits();
+  await addAdminAudit({
+    adminId: ctx.from.id,
+    action: "geni_clear_visits",
+    targetType: "geni",
+    note: "Cleared GENI visit logs"
+  });
+  await ctx.answerCbQuery("GENI test data cleared.");
+  await showScreen(ctx, formatGeniSimpleHome(), geniSimpleKeyboard());
 });
 
 bot.action(/^geni:fraud:(ip|device):(up|down)$/, async (ctx) => {
@@ -4201,7 +4227,7 @@ async function handleGeniDraftMessage(ctx: Context & { from: TelegramFrom; messa
     }
     setGeniDraft(ctx.from.id, { ...draft, step: "profit_cost", profitCpmUsd: roundTo(value, 4) });
     await showFlowScreen(ctx, [
-      "💹 Profit Check",
+      "💹 Profit Calculator",
       "",
       "Step 2 of 4",
       "Each visitor cost koto?",
@@ -4222,7 +4248,7 @@ async function handleGeniDraftMessage(ctx: Context & { from: TelegramFrom; messa
     }
     setGeniDraft(ctx.from.id, { ...draft, step: "profit_visits", trafficCostPerVisitUsd: roundTo(value, 6) });
     await showFlowScreen(ctx, [
-      "💹 Profit Check",
+      "💹 Profit Calculator",
       "",
       "Step 3 of 4",
       "Koto visitor plan korcho?",
@@ -4241,7 +4267,7 @@ async function handleGeniDraftMessage(ctx: Context & { from: TelegramFrom; messa
     }
     setGeniDraft(ctx.from.id, { ...draft, step: "profit_rate", plannedVisits: value });
     await showFlowScreen(ctx, [
-      "💹 Profit Check",
+      "💹 Profit Calculator",
       "",
       "Step 4 of 4",
       "Expected completion rate koto percent?",
@@ -4343,6 +4369,27 @@ function geniActualProfit(linkId?: string): number {
   return ((stats.completed / 1000) * settings.profitCpmUsd) - (stats.started * settings.trafficCostPerVisitUsd);
 }
 
+function geniActualIncome(linkId?: string): number {
+  const settings = geniSettings();
+  const stats = geniStats(linkId);
+  return (stats.completed / 1000) * settings.profitCpmUsd;
+}
+
+function geniActualCost(linkId?: string): number {
+  const settings = geniSettings();
+  const stats = geniStats(linkId);
+  return stats.started * settings.trafficCostPerVisitUsd;
+}
+
+function geniTrackingStatus(): string {
+  const links = store.snapshot().geniLinks;
+  const stats = geniStats();
+  if (links.length === 0) return "Not set up";
+  if (stats.started === 0) return "Ready, no click yet";
+  if (stats.completed === 0) return "Clicked, no completion yet";
+  return "Completed visits found";
+}
+
 function geniSettingsForPreset(preset: "loose" | "normal" | "strict"): GeniSettings {
   const current = geniSettings();
   const values = preset === "loose"
@@ -4410,25 +4457,43 @@ function formatTopCounts(items: Array<{ label: string; count: number }>): string
 
 function formatGeniSimpleHome(): string {
   const stats = geniStats();
-  const active = store.snapshot().geniLinks.filter((link) => link.status === "active").length;
+  const state = store.snapshot();
+  const active = state.geniLinks.filter((link) => link.status === "active").length;
+  if (state.geniLinks.length === 0) {
+    return [
+      "🧪 GENI",
+      "",
+      "Status: Not set up",
+      "",
+      "No tracking link yet.",
+      "Create a link first."
+    ].join("\n");
+  }
+
+  const completionNote = stats.completed === 0
+    ? "No completed visit yet."
+    : "Completed visits found.";
   return [
     "🧪 GENI",
     "",
     "What do you want to do?",
     "",
+    `Status: ${geniTrackingStatus()}`,
     `Running links: ${active}`,
     `Clicked: ${stats.started}`,
     `Completed: ${stats.completed}`,
-    `Profit estimate: ${formatUsd(geniActualProfit())}`,
+    `Estimated actual profit: ${formatUsd(geniActualProfit())}`,
+    completionNote,
     "",
+    "This is not wallet balance.",
     "Use the buttons below."
   ].join("\n");
 }
 
 function geniSimpleKeyboard() {
   return Markup.inlineKeyboard([
-    [Markup.button.callback("➕ Create Link", "geni:new"), Markup.button.callback("📊 Results", "geni:results")],
-    [Markup.button.callback("💹 Profit Check", "geni:profit"), Markup.button.callback("⏸ Stop Link", "geni:stop")],
+    [Markup.button.callback("➕ Create Link", "geni:new"), Markup.button.callback("📊 Real Results", "geni:results")],
+    [Markup.button.callback("💹 Profit Calculator", "geni:profit"), Markup.button.callback("⏸ Stop Link", "geni:stop")],
     [Markup.button.callback("🛡 Safety", "geni:safety"), Markup.button.callback("⚙️ Advanced", "geni:advanced")],
     [Markup.button.callback("⬅️ Admin Panel", "admin:dashboard")]
   ]);
@@ -4443,6 +4508,7 @@ function formatGeniAdvancedDashboard(): string {
   return [
     "🧪 GENI Short Link Lab",
     "",
+    `Status: ${geniTrackingStatus()}`,
     `Active links: ${active}`,
     `Paused links: ${paused}`,
     `Archived links: ${archived}`,
@@ -4460,9 +4526,17 @@ function formatGeniAdvancedDashboard(): string {
 function geniAdvancedKeyboard() {
   return Markup.inlineKeyboard([
     [Markup.button.callback("➕ New Link", "geni:new"), Markup.button.callback("🔗 Links", "geni:links")],
-    [Markup.button.callback("📊 Analytics", "geni:analytics"), Markup.button.callback("💹 Profit", "geni:profit")],
+    [Markup.button.callback("📊 Analytics", "geni:analytics"), Markup.button.callback("💹 Calculator", "geni:profit")],
     [Markup.button.callback("🛡 Fraud", "geni:fraud"), Markup.button.callback("🧾 Logs", "geni:logs")],
+    [Markup.button.callback("🧹 Clear Test Data", "geni:clear")],
     [Markup.button.callback("⬅️ Simple", "geni:dashboard"), Markup.button.callback("Admin Panel", "admin:dashboard")]
+  ]);
+}
+
+function geniClearConfirmKeyboard() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("Yes, clear test data", "geni:clear:confirm")],
+    [Markup.button.callback("Cancel", "geni:advanced")]
   ]);
 }
 
@@ -4479,8 +4553,9 @@ function formatGeniSimpleResults(): string {
   const bestCountry = stats.countries[0]?.label ?? "No data";
   const bestDevice = stats.devices[0]?.label ?? "No data";
   return [
-    "📊 Results",
+    "📊 Real Results",
     "",
+    `Status: ${geniTrackingStatus()}`,
     `Total people clicked: ${stats.started}`,
     `Completed: ${stats.completed}`,
     `Not completed: ${incomplete}`,
@@ -4490,13 +4565,16 @@ function formatGeniSimpleResults(): string {
     `Best country: ${bestCountry}`,
     `Best device: ${bestDevice}`,
     "",
-    `Profit estimate: ${formatUsd(geniActualProfit())}`
+    `Estimated actual income: ${formatUsd(geniActualIncome())}`,
+    `Estimated actual profit: ${formatUsd(geniActualProfit())}`,
+    "",
+    "This is tracking estimate only, not paid balance."
   ].join("\n");
 }
 
 function geniResultsKeyboard() {
   return Markup.inlineKeyboard([
-    [Markup.button.callback("🔗 Select Link", "geni:links"), Markup.button.callback("💹 Profit", "geni:profit")],
+    [Markup.button.callback("🔗 Select Link", "geni:links"), Markup.button.callback("💹 Calculator", "geni:profit")],
     [Markup.button.callback("🛡 Suspicious", "geni:safety"), Markup.button.callback("⚙️ Details", "geni:advanced")],
     [Markup.button.callback("⬅️ Back", "geni:dashboard")]
   ]);
@@ -4614,18 +4692,19 @@ function formatGeniProfitCalculator(): string {
   const projectedIncome = (projectedCompleted / 1000) * settings.profitCpmUsd;
   const projectedCost = settings.plannedVisits * settings.trafficCostPerVisitUsd;
   const projectedProfit = projectedIncome - projectedCost;
-  const actualIncome = (actual.completed / 1000) * settings.profitCpmUsd;
-  const actualCost = actual.started * settings.trafficCostPerVisitUsd;
-  const actualProfit = actualIncome - actualCost;
+  const actualIncome = geniActualIncome();
+  const actualCost = geniActualCost();
+  const actualProfit = geniActualProfit();
   const breakEvenCost = (settings.profitCpmUsd * (settings.expectedCompletionRate / 100)) / 1000;
   const result = projectedProfit > 0 ? "Looks profitable" : projectedProfit < 0 ? "May lose money" : "Break-even";
 
   return [
-    "💹 Profit Check",
+    "💹 Profit Calculator",
     "",
-    `You may earn: ${formatUsd(projectedIncome)}`,
-    `Your cost: ${formatUsd(projectedCost)}`,
-    `Profit: ${formatUsd(projectedProfit)}`,
+    "Projection",
+    `Projected income: ${formatUsd(projectedIncome)}`,
+    `Projected cost: ${formatUsd(projectedCost)}`,
+    `Projected profit: ${formatUsd(projectedProfit)}`,
     `Result: ${result}`,
     "",
     "Your numbers:",
@@ -4635,21 +4714,23 @@ function formatGeniProfitCalculator(): string {
     `Completion: ${settings.expectedCompletionRate}%`,
     `Expected completed: ${projectedCompleted}`,
     "",
-    "Current GENI estimate:",
-    `Started: ${actual.started}`,
-    `Completed: ${actual.completed}`,
-    `Income: ${formatUsd(actualIncome)}`,
-    `Cost: ${formatUsd(actualCost)}`,
-    `Profit: ${formatUsd(actualProfit)}`,
+    "Actual tracking",
+    `Clicked: ${actual.started}`,
+    `Completed visits: ${actual.completed}`,
+    `Estimated actual income: ${formatUsd(actualIncome)}`,
+    `Estimated actual cost: ${formatUsd(actualCost)}`,
+    `Estimated actual profit: ${formatUsd(actualProfit)}`,
     "",
-    `Break-even visitor cost: ${formatUsd(breakEvenCost)}`
+    `Break-even visitor cost: ${formatUsd(breakEvenCost)}`,
+    "",
+    "Note: This is not wallet balance."
   ].join("\n");
 }
 
 function geniProfitKeyboard() {
   return Markup.inlineKeyboard([
     [Markup.button.callback("✏️ Change Numbers", "geni:profit:edit")],
-    [Markup.button.callback("📊 Results", "geni:results"), Markup.button.callback("⬅️ Back", "geni:dashboard")]
+    [Markup.button.callback("📊 Real Results", "geni:results"), Markup.button.callback("⬅️ Back", "geni:dashboard")]
   ]);
 }
 
@@ -4711,7 +4792,9 @@ function formatGeniLinkDetail(link: GeniLink): string {
     `Telegram verified: ${stats.telegramVerified}`,
     `Suspect: ${stats.suspect}`,
     "",
-    `Profit estimate: ${formatUsd(geniActualProfit(link.id))}`,
+    `Estimated actual income: ${formatUsd(geniActualIncome(link.id))}`,
+    `Estimated actual profit: ${formatUsd(geniActualProfit(link.id))}`,
+    "This is tracking estimate only, not paid balance.",
     "",
     "Share this Tracking Link:",
     geniStartUrl(link.id)

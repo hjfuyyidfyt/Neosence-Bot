@@ -88,6 +88,7 @@ export interface NeosenceStore {
   upsertGeniLink(link: GeniLink): Promise<void>;
   upsertGeniVisit(visit: GeniVisit): Promise<void>;
   updateGeniSettings(settings: GeniSettings): Promise<void>;
+  clearGeniVisits(): Promise<void>;
 }
 
 abstract class CachedStore implements NeosenceStore {
@@ -251,6 +252,11 @@ abstract class CachedStore implements NeosenceStore {
 
   async updateGeniSettings(settings: GeniSettings): Promise<void> {
     this.state.geniSettings = settings;
+    await this.save();
+  }
+
+  async clearGeniVisits(): Promise<void> {
+    this.state.geniVisits = [];
     await this.save();
   }
 }
