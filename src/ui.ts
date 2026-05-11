@@ -59,6 +59,7 @@ export function formatTask(task: Task, language?: LanguageCode, options: TaskFor
       reward: "রিওয়ার্ড",
       workers: "ওয়ার্কার",
       verify: "ভেরিফাই",
+      taskId: "টাস্ক ID",
       visitTimer: "ভিজিট টাইমার",
       instructions: "ইনস্ট্রাকশন",
       join: "Join"
@@ -67,12 +68,16 @@ export function formatTask(task: Task, language?: LanguageCode, options: TaskFor
       reward: "Reward",
       workers: "Workers",
       verify: "Verify",
+      taskId: "Task ID",
       visitTimer: "Visit timer",
       instructions: "Instructions",
       join: "Join"
     };
   const target = formatTaskTarget(task, language, options);
-  const lines = [`💼 ${bold(task.title)}`];
+  const lines = [
+    `💼 ${bold(task.title)}`,
+    `🆔 ${bold(`${labels.taskId}:`)} ${code(task.id)}`
+  ];
 
   if (target) {
     lines.push(target, "");
@@ -156,6 +161,10 @@ function formatTaskTarget(task: Task, language?: LanguageCode, options: TaskForm
 
 function bold(value: string): string {
   return `<b>${escapeHtml(value)}</b>`;
+}
+
+function code(value: string): string {
+  return `<code>${escapeHtml(value)}</code>`;
 }
 
 function htmlLink(label: string, url: string): string {

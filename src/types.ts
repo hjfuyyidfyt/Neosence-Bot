@@ -92,6 +92,7 @@ export interface WalletTransaction {
   taskId?: string;
   submissionId?: string;
   note?: string;
+  holdUntil?: string;
   createdAt: string;
 }
 

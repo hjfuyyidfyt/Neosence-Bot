@@ -19,6 +19,21 @@ import type {
 const now = () => new Date().toISOString();
 const id = (prefix: string) => `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 
+export function generateTaskId(state: Pick<StoreState, "tasks">): string {
+  const existing = new Set(state.tasks.map((task) => task.id));
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const candidate = String(Math.floor(100000 + Math.random() * 900000));
+    if (!existing.has(candidate)) return candidate;
+  }
+
+  for (let value = 100000; value <= 999999; value += 1) {
+    const candidate = String(value);
+    if (!existing.has(candidate)) return candidate;
+  }
+
+  throw new Error("No 6-digit task IDs are available.");
+}
+
 export function getOrCreateUser(state: StoreState, from: {
   id: number;
   username?: string;
@@ -53,6 +68,7 @@ export function switchMode(user: UserProfile, mode: UserMode): UserProfile {
 }
 
 export function createTask(input: {
+  id: string;
   buyerId: number;
   title: string;
   category: string;
@@ -64,8 +80,12 @@ export function createTask(input: {
   verificationTarget?: string;
   websiteVisitSeconds?: number;
 }): Task {
+  if (!/^\d{6}$/.test(input.id)) {
+    throw new Error("Task ID must be a unique 6-digit number.");
+  }
+
   return {
-    id: id("task"),
+    id: input.id,
     buyerId: input.buyerId,
     title: input.title,
     category: input.category,
@@ -110,6 +130,7 @@ export function createTransaction(input: {
   taskId?: string;
   submissionId?: string;
   note?: string;
+  holdUntil?: string;
 }): WalletTransaction {
   return {
     id: id("txn"),
@@ -120,6 +141,7 @@ export function createTransaction(input: {
     taskId: input.taskId,
     submissionId: input.submissionId,
     note: input.note,
+    holdUntil: input.holdUntil,
     createdAt: now()
   };
 }
@@ -216,9 +238,11 @@ export function createDispute(input: {
 export function walletSummary(state: StoreState, userId: number) {
   const completed = state.walletTransactions.filter((item) => item.userId === userId && item.status === "completed");
   const pending = state.walletTransactions.filter((item) => item.userId === userId && item.status === "pending");
-  const heldAutoEarn = completed
-    .filter((item) => item.type === "earn" && item.note?.includes("Withdraw hold target"))
-    .filter((item) => isWithinHoldWindow(item.createdAt))
+  const pendingApprovalAmount = state.submissions
+    .filter((item) => item.workerId === userId && item.status === "pending")
+    .reduce((sum, item) => sum + item.rewardAmount, 0);
+  const autoHold = completed
+    .filter((item) => item.type === "earn" && isAutoEarnOnHold(item))
     .reduce((sum, item) => sum + item.amount, 0);
 
   const available = completed.reduce((sum, item) => {
@@ -227,7 +251,7 @@ export function walletSummary(state: StoreState, userId: number) {
     return sum;
   }, 0);
 
-  const pendingAmount = pending.reduce((sum, item) => sum + item.amount, 0);
+  const pendingTransactionAmount = pending.reduce((sum, item) => sum + item.amount, 0);
   const escrow = completed
     .filter((item) => item.type === "escrow_lock" || item.type === "escrow_release" || item.type === "escrow_refund")
     .reduce((sum, item) => {
@@ -237,8 +261,11 @@ export function walletSummary(state: StoreState, userId: number) {
 
   return {
     available: roundMoney(available),
-    pending: roundMoney(pendingAmount),
-    withdrawable: roundMoney(Math.max(available - heldAutoEarn, 0)),
+    pending: roundMoney(pendingApprovalAmount + pendingTransactionAmount),
+    pendingApproval: roundMoney(pendingApprovalAmount),
+    pendingTransactions: roundMoney(pendingTransactionAmount),
+    autoHold: roundMoney(autoHold),
+    withdrawable: roundMoney(Math.max(available - autoHold, 0)),
     escrow: roundMoney(Math.max(escrow, 0))
   };
 }
@@ -376,4 +403,13 @@ function isWithinHoldWindow(createdAt: string): boolean {
   if (!Number.isFinite(createdTime)) return false;
   const holdMs = config.autoWithdrawHoldHours * 60 * 60 * 1000;
   return Date.now() - createdTime < holdMs;
+}
+
+function isAutoEarnOnHold(transaction: WalletTransaction): boolean {
+  if (transaction.holdUntil) {
+    const holdUntil = new Date(transaction.holdUntil).getTime();
+    return Number.isFinite(holdUntil) && Date.now() < holdUntil;
+  }
+
+  return Boolean(transaction.note?.includes("Withdraw hold target") && isWithinHoldWindow(transaction.createdAt));
 }

@@ -17,6 +17,7 @@ import {
   escrowRequired,
   calculateTrustLevel,
   calculateTrustScore,
+  generateTaskId,
   getOrCreateUser,
   rejectSubmission,
   switchMode,
@@ -308,6 +309,7 @@ bot.command("posttask", async (ctx) => {
   }
 
   const task = withTaskTargetMetadata(createTask({
+    id: generateTaskId(store.snapshot()),
     buyerId: user.id,
     title,
     category,
@@ -347,11 +349,11 @@ bot.command("mytasks", async (ctx) => {
 
   await ctx.reply([
     `Owned tasks: ${owned.length}`,
-    ...owned.slice(0, 8).map((task) => `- ${task.id}: ${task.title} (${task.status}, ${task.completedCount}/${task.workerLimit})`),
+    ...owned.slice(0, 8).map((task) => `- <code>${escapeHtml(task.id)}</code>: ${escapeHtml(task.title)} (${task.status}, ${task.completedCount}/${task.workerLimit})`),
     "",
     `Your submissions: ${submissions.length}`,
-    ...submissions.slice(0, 8).map((submission) => `- ${submission.id}: ${submission.status}, ${submission.rewardAmount} BDT`)
-  ].join("\n"));
+    ...submissions.slice(0, 8).map((submission) => `- ${escapeHtml(submission.id)}: ${submission.status}, ${submission.rewardAmount} BDT`)
+  ].join("\n"), taskHtmlExtra());
 });
 
 bot.command("withdraw", async (ctx) => {
@@ -1737,6 +1739,7 @@ bot.action("wizard:confirm", async (ctx) => {
   }
 
   const task = withTaskTargetMetadata(createTask({
+    id: generateTaskId(store.snapshot()),
     buyerId: user.id,
     title: draft.title,
     category: draft.category,
@@ -2451,6 +2454,11 @@ function walletLabels(language?: "en" | "bn") {
       deposit: "ডিপোজিট",
       postTask: "টাস্ক পোস্ট",
       campaigns: "ক্যাম্পেইন",
+      balance: "ব্যালেন্স",
+      available: "অ্যাভেইলেবল",
+      pendingApproval: "অ্যাপ্রুভাল পেন্ডিং",
+      autoHold: "অটো হোল্ড",
+      escrowLocked: "এস্ক্রো লক",
       withdrawAll: "সব উইথড্র",
       customAmount: "কাস্টম অ্যামাউন্ট",
       changePayout: "পেআউট পরিবর্তন",
@@ -2475,8 +2483,8 @@ function walletLabels(language?: "en" | "bn") {
       withdrawSubmitted: "✅ উইথড্র রিকোয়েস্ট জমা হয়েছে",
       noWithdrawals: "এখনও কোনো উইথড্র নেই।",
       depositHelp: "ডিপোজিট করতে /depositreq কমান্ড ব্যবহার করুন।\n\nফরম্যাট:\n/depositreq 500 bkash trxid-or-proof-note",
-      escrowInsufficient: "টাস্ক পাবলিশ করার মতো withdrawable balance নেই। Hold/Pending ব্যালেন্স ব্যবহার করা যাবে না।",
-      hint: "পেন্ডিং/হোল্ড ব্যালেন্স খরচ বা উইথড্র করা যাবে না।"
+      escrowInsufficient: "টাস্ক পাবলিশ করার মতো withdrawable balance নেই। Pending/Auto Hold ব্যালেন্স ব্যবহার করা যাবে না।",
+      hint: "অ্যাপ্রুভাল পেন্ডিং/অটো হোল্ড ব্যালেন্স খরচ বা উইথড্র করা যাবে না।"
     };
   }
 
@@ -2484,6 +2492,11 @@ function walletLabels(language?: "en" | "bn") {
     deposit: "Deposit",
     postTask: "Post Task",
     campaigns: "Campaigns",
+    balance: "Balance",
+    available: "Available",
+    pendingApproval: "Pending Approval",
+    autoHold: "Auto Hold",
+    escrowLocked: "Escrow Locked",
     withdrawAll: "Withdraw All",
     customAmount: "Custom Amount",
     changePayout: "Change Payout",
@@ -2508,8 +2521,8 @@ function walletLabels(language?: "en" | "bn") {
     withdrawSubmitted: "✅ Withdrawal request submitted",
     noWithdrawals: "No withdrawals yet.",
     depositHelp: "Use /depositreq to request a deposit.\n\nFormat:\n/depositreq 500 bkash trxid-or-proof-note",
-    escrowInsufficient: "Not enough withdrawable balance to publish this task. Hold/pending balance cannot be used.",
-    hint: "Pending/Hold balance cannot be withdrawn or spent."
+    escrowInsufficient: "Not enough withdrawable balance to publish this task. Pending/Auto Hold balance cannot be used.",
+    hint: "Pending approval/Auto Hold balance cannot be withdrawn or spent."
   };
 }
 
@@ -2571,30 +2584,21 @@ function formatWallet(userId: number, mode: "freelancer" | "buyer", language?: "
   const labels = walletLabels(language);
   const user = store.snapshot().users.find((item) => item.id === userId);
   const wallet = walletSummary(store.snapshot(), userId);
-  const hold = Math.max(wallet.available - wallet.withdrawable, 0);
   const payout = user?.payoutMethod ? formatSavedPayout(user.payoutMethod.type, user.payoutMethod.account) : labels.notSet;
 
   return [
     mode === "buyer" ? messages.wallet.buyerTitle : messages.wallet.freelancerTitle,
     "",
-    labelWithoutColon(messages.wallet.available),
-    formatMoney(wallet.available, language),
-    "",
-    labelWithoutColon(messages.wallet.withdrawable),
-    formatMoney(wallet.withdrawable, language),
-    "",
-    `${messages.wallet.pending} ${formatMoney(wallet.pending, language)}`,
-    `${messages.wallet.autoHold} ${formatMoney(hold, language)}`,
-    `${messages.wallet.escrowLocked} ${formatMoney(wallet.escrow, language)}`,
+    `${labels.balance}: ${formatMoney(wallet.available, language)}`,
+    `${labels.available}: ${formatMoney(wallet.withdrawable, language)}`,
+    `${labels.pendingApproval}: ${formatMoney(wallet.pendingApproval, language)}`,
+    `${labels.autoHold}: ${formatMoney(wallet.autoHold, language)}`,
+    `${labels.escrowLocked}: ${formatMoney(wallet.escrow, language)}`,
     "",
     `${labels.payout}: ${payout}`,
     "",
     labels.hint
   ].join("\n");
-}
-
-function labelWithoutColon(label: string): string {
-  return label.replace(/:$/, "");
 }
 
 function assertEnoughWithdrawableForEscrow(userId: number, requiredEscrow: number, language?: "en" | "bn") {
@@ -3066,7 +3070,7 @@ function formatUserProfile(userId: number, language?: "en" | "bn"): string {
   const state = store.snapshot();
   const user = state.users.find((item) => item.id === userId);
   const wallet = walletSummary(state, userId);
-  const hold = Math.max(wallet.available - wallet.withdrawable, 0);
+  const walletText = walletLabels(language);
   const trust = calculateTrustScore(state, userId);
   const submissions = state.submissions.filter((submission) => submission.workerId === userId);
   const approved = submissions.filter((submission) => submission.status === "approved" || submission.status === "auto_approved").length;
@@ -3089,11 +3093,11 @@ function formatUserProfile(userId: number, language?: "en" | "bn"): string {
     `${labels.trust} ${trust.label} ${trust.score}/100`,
     "",
     messages.profile.wallet,
-    `${messages.wallet.available} ${formatMoney(wallet.available, language)}`,
-    `${messages.wallet.withdrawable} ${formatMoney(wallet.withdrawable, language)}`,
-    `${messages.wallet.pending} ${formatMoney(wallet.pending, language)}`,
-    `${messages.wallet.autoHold} ${formatMoney(hold, language)}`,
-    `${messages.wallet.escrowLocked} ${formatMoney(wallet.escrow, language)}`,
+    `${walletText.balance}: ${formatMoney(wallet.available, language)}`,
+    `${walletText.available}: ${formatMoney(wallet.withdrawable, language)}`,
+    `${walletText.pendingApproval}: ${formatMoney(wallet.pendingApproval, language)}`,
+    `${walletText.autoHold}: ${formatMoney(wallet.autoHold, language)}`,
+    `${walletText.escrowLocked}: ${formatMoney(wallet.escrow, language)}`,
     "",
     messages.profile.activity,
     `${labels.approved} ${approved}`,
@@ -3681,7 +3685,7 @@ async function handleTelegramMemberJoined(update: TelegramChatMemberUpdateLike) 
 
   await recordTelegramMembershipForJoin(task, workerId, chatId, inviteLink.id, submission.id);
   await revokeTelegramInviteLink(usedInviteLink);
-  await sendTelegramMessageSafe(workerId, `Telegram join verified. ${formatMoneyForUser(workerId, task.rewardPerWorker)} added to your wallet.`);
+  await sendTelegramMessageSafe(workerId, formatAutoRewardMessage(workerId, "Telegram join verified", task.rewardPerWorker));
 }
 
 async function handleTelegramMemberLeft(update: TelegramChatMemberUpdateLike) {
@@ -3823,6 +3827,25 @@ function isActiveTelegramMember(member: TelegramChatMemberLike): boolean {
 function formatMoneyForUser(userId: number, amount: number): string {
   const user = store.snapshot().users.find((item) => item.id === userId);
   return formatMoney(amount, user?.language);
+}
+
+function formatAutoRewardMessage(userId: number, title: string, amount: number): string {
+  const user = store.snapshot().users.find((item) => item.id === userId);
+  const money = formatMoney(amount, user?.language);
+  if (config.autoWithdrawHoldHours > 0) {
+    if (user?.language === "bn") {
+      return `${title}.\n${money} অটো হোল্ডে যোগ হয়েছে। ${config.autoWithdrawHoldHours}h পরে অ্যাভেইলেবল হবে।`;
+    }
+    return `${title}.\n${money} added to Auto Hold. Available after ${config.autoWithdrawHoldHours}h.`;
+  }
+
+  if (user?.language === "bn") return `${title}.\n${money} ওয়ালেটে যোগ হয়েছে।`;
+  return `${title}.\n${money} added to your wallet.`;
+}
+
+function autoWithdrawHoldUntil(): string | undefined {
+  if (config.autoWithdrawHoldHours <= 0) return undefined;
+  return new Date(Date.now() + config.autoWithdrawHoldHours * 60 * 60 * 1000).toISOString();
 }
 
 async function handleTaskWizardMessage(ctx: Context & { from: TelegramFrom; message: unknown }, draft: TaskDraft) {
@@ -5145,7 +5168,7 @@ function formatAdminSettings(): string {
     `Active admins: ${activeAdmins.length}`,
     `Inactive panel admins: ${inactivePanelAdmins}`,
     `Platform fee: ${config.platformFeePercent}%`,
-    `Withdraw hold: ${config.autoWithdrawHoldHours}h`,
+    `Auto hold: ${config.autoWithdrawHoldHours}h`,
     `USD rate: 1 USD = ${config.usdToBdt} BDT`,
     `Storage: ${config.databaseUrl ? "PostgreSQL" : "local JSON"}`
   ].join("\n");
@@ -6149,7 +6172,7 @@ async function handleWebsiteVisitComplete(response: ServerResponse, requestUrl: 
 
     try {
       await completeAutoTask(task, workerId, "website_visit_timer_completed", "Website visit timer completed");
-      await bot.telegram.sendMessage(workerId, `Website visit verified. ${task.rewardPerWorker} BDT added to your wallet.`);
+      await bot.telegram.sendMessage(workerId, formatAutoRewardMessage(workerId, "Website visit verified", task.rewardPerWorker));
     } catch {
       // Verify Now remains as fallback if auto payout races or fails.
     }
@@ -6464,7 +6487,7 @@ async function completeApiVerifiedTask(payload: ApiVerificationPayload) {
     metadata: { event: payload.event ?? "api_verified" }
   }));
   await completeAutoTask(task, payload.workerId, payload.proof ?? `${verificationType}_api_verified`, "API/webhook verified");
-  await bot.telegram.sendMessage(payload.workerId, `Task verified. ${task.rewardPerWorker} BDT added to your wallet.`);
+  await bot.telegram.sendMessage(payload.workerId, formatAutoRewardMessage(payload.workerId, "Task verified", task.rewardPerWorker));
   return { ok: true, taskId: task.id, workerId: payload.workerId };
 }
 
@@ -6708,7 +6731,7 @@ async function verifyTelegramJoin(ctx: Context & { from: TelegramFrom }, taskId:
     }));
     const submission = await completeAutoTask(task, ctx.from.id, "telegram_join_verified", "Telegram join verified");
     await recordTelegramMembershipForJoin(task, ctx.from.id, chatId, undefined, submission.id);
-    await ctx.reply(`Verified. ${formatMoneyForUser(ctx.from.id, task.rewardPerWorker)} added to your wallet.`);
+    await ctx.reply(formatAutoRewardMessage(ctx.from.id, "Verified", task.rewardPerWorker));
   } catch (error) {
     await ctx.reply(`Verification failed. Check that the bot is added to the target channel/group. ${(error as Error).message}`);
   }
@@ -6742,7 +6765,7 @@ async function verifyWebsiteVisit(ctx: Context & { from: TelegramFrom }, taskId:
   }
 
   await completeAutoTask(task, ctx.from.id, "website_visit_tracked", "Website visit tracked");
-  await ctx.reply(`Website visit verified. ${task.rewardPerWorker} BDT added to your wallet.`);
+  await ctx.reply(formatAutoRewardMessage(ctx.from.id, "Website visit verified", task.rewardPerWorker));
 }
 
 async function handleQuizAnswer(ctx: Context & { from: TelegramFrom; message: unknown }, taskId: string) {
@@ -6781,7 +6804,7 @@ async function handleQuizAnswer(ctx: Context & { from: TelegramFrom; message: un
   }));
   try {
     await completeAutoTask(task, ctx.from.id, "quiz_answer_verified", "Quiz answer verified");
-    await ctx.reply(`Quiz verified. ${task.rewardPerWorker} BDT added to your wallet.`);
+    await ctx.reply(formatAutoRewardMessage(ctx.from.id, "Quiz verified", task.rewardPerWorker));
   } catch (error) {
     await ctx.reply((error as Error).message);
   } finally {
@@ -6826,7 +6849,7 @@ async function handleInAppCodeAnswer(ctx: Context & { from: TelegramFrom; messag
 
   try {
     await completeAutoTask(task, ctx.from.id, "in_app_code_verified", "In-app code verified");
-    await ctx.reply(`Code verified. ${task.rewardPerWorker} BDT added to your wallet.`);
+    await ctx.reply(formatAutoRewardMessage(ctx.from.id, "Code verified", task.rewardPerWorker));
   } catch (error) {
     await ctx.reply((error as Error).message);
   } finally {
@@ -6857,7 +6880,8 @@ async function completeAutoTask(task: Task, workerId: number, proof: string, not
     amount: task.rewardPerWorker,
     taskId: task.id,
     submissionId: submission.id,
-    note: `${note}. Withdraw hold target: ${config.autoWithdrawHoldHours}h`
+    note,
+    holdUntil: autoWithdrawHoldUntil()
   }));
   await store.addTransaction(createTransaction({
     userId: task.buyerId,
