@@ -13,6 +13,7 @@ export type TaskApprovalType = "manual" | "auto";
 export type VerificationType =
   | "telegram_join"
   | "website_visit"
+  | "website_final_page"
   | "website_webhook"
   | "app_attribution"
   | "in_app_code"
@@ -236,7 +237,10 @@ export interface GeniLink {
   name: string;
   adminId: number;
   status: GeniLinkStatus;
+  taskId?: string;
   shortenerUrl?: string;
+  rewardPerWorker?: number;
+  workerLimit?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -246,6 +250,7 @@ export interface GeniVisit {
   linkId: string;
   sessionId: string;
   status: "started" | "completed";
+  workerId?: number;
   telegramUserId?: number;
   ip?: string;
   userAgent?: string;

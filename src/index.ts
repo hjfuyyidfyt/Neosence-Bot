@@ -104,12 +104,14 @@ interface TaskDraft {
 }
 
 const taskDrafts = new Map<number, TaskDraft>();
-type GeniDraftStep = "name" | "shortener" | "profit_cpm" | "profit_cost" | "profit_visits" | "profit_rate";
+type GeniDraftStep = "name" | "reward" | "workers" | "shortener" | "profit_cpm" | "profit_cost" | "profit_visits" | "profit_rate";
 
 interface GeniDraft {
   step: GeniDraftStep;
   linkId?: string;
   name?: string;
+  rewardPerWorker?: number;
+  workerLimit?: number;
   profitCpmUsd?: number;
   trafficCostPerVisitUsd?: number;
   plannedVisits?: number;
@@ -172,7 +174,7 @@ const ADMIN_CONSOLE_COMMANDS = [
   { command: "broadcast", description: "📣 Prepare announcement flow" },
   { command: "audit", description: "🧾 View recent admin activity" },
   { command: "settings", description: "⚙️ View system settings" },
-  { command: "geni", description: "🧪 Open GENI short-link lab" }
+  { command: "geni", description: "🧪 Post GENI Website tasks" }
 ];
 const ADMIN_PANEL_CHANNEL_COMMANDS = [
   { command: "chatid", description: "🆔 Show this channel ID" },
@@ -1287,12 +1289,15 @@ bot.action("geni:new", async (ctx) => {
   await ctx.answerCbQuery();
   setGeniDraft(ctx.from.id, { step: "name" });
   await showScreen(ctx, [
-    "➕ Create Tracking Link",
+    "➕ Post Website Task",
     "",
-    "Send a simple name.",
+    "GENI is an experimental Website verification method.",
+    "",
+    "Step 1 of 4",
+    "Send the task title.",
     "",
     "Example:",
-    "My Shortener Test"
+    "Complete shortlink visit"
   ].join("\n"), geniCancelKeyboard());
 });
 
@@ -1467,13 +1472,13 @@ bot.action(/^geni:shortener:(.+)$/, async (ctx) => {
   await showScreen(ctx, [
     "🔗 Add Shortener URL",
     "",
-    `Link: ${link.name}`,
+    `Task: ${link.name}`,
     "",
     "First use this Final URL as the destination in your paid shortener:",
     geniFinalUrl(link.id),
     "",
     "Then send the shortener URL here.",
-    "Send skip to leave it empty."
+    link.taskId ? "This will update the Website task target." : "This will publish the Website task."
   ].join("\n"), geniCancelKeyboard(link.id));
 });
 
@@ -1493,6 +1498,7 @@ bot.action(/^geni:(pause|resume|archive):(.+)$/, async (ctx) => {
     updatedAt: new Date().toISOString()
   };
   await store.upsertGeniLink(updated);
+  await syncGeniTaskStatus(updated);
   await addAdminAudit({
     adminId: ctx.from.id,
     action: `geni_${action}`,
@@ -1517,6 +1523,7 @@ bot.action(/^geni:quick_stop:(.+)$/, async (ctx) => {
     updatedAt: new Date().toISOString()
   };
   await store.upsertGeniLink(updated);
+  await syncGeniTaskStatus(updated);
   await addAdminAudit({
     adminId: ctx.from.id,
     action: "geni_quick_stop",
@@ -2139,6 +2146,11 @@ bot.action(/^verify:(.+)$/, async (ctx) => {
     return;
   }
 
+  if (task.verificationType === "website_final_page") {
+    await verifyGeniFinalPage(ctx, task.id);
+    return;
+  }
+
   if (task.verificationType === "quiz") {
     quizWaiters.set(ctx.from.id, task.id);
     await ctx.reply("Send the quiz answer/code. Correct answers are rewarded instantly.");
@@ -2681,6 +2693,15 @@ async function formatTaskForUser(ctx: Context, task: Task, user: UserProfile): P
           : `Join link could not be prepared: ${escapeTelegramHtml((error as Error).message)}`
       ].join("\n");
     }
+  }
+
+  if (hydratedTask.verificationType === "website_final_page" && hydratedTask.buyerId !== user.id) {
+    const link = store.snapshot().geniLinks.find((item) => item.taskId === hydratedTask.id);
+    return formatTask(hydratedTask, user.language, {
+      targetTitle: hydratedTask.verificationTarget ?? link?.shortenerUrl ?? "Shortener link",
+      targetUrl: link ? geniStartUrl(link.id, user.id) : hydratedTask.verificationTargetUrl,
+      joinLabel: user.language === "bn" ? "Open" : "Open"
+    });
   }
 
   return formatTask(hydratedTask, user.language, {
@@ -4170,12 +4191,60 @@ async function handleGeniDraftMessage(ctx: Context & { from: TelegramFrom; messa
 
   if (draft.step === "name") {
     const name = text.slice(0, 80);
+    setGeniDraft(ctx.from.id, { step: "reward", name });
+    const user = await ensureUser(ctx.from);
+    await showFlowScreen(ctx, [
+      "Step 2 of 4",
+      "",
+      `Task: ${name}`,
+      "",
+      rewardPrompt("website", user.language)
+    ].join("\n"), geniCancelKeyboard());
+    return;
+  }
+
+  if (draft.step === "reward") {
+    const user = await ensureUser(ctx.from);
+    const reward = parseRewardInput(text, user.language);
+    if (!Number.isFinite(reward) || reward <= 0) {
+      await showFlowScreen(ctx, rewardPrompt("website", user.language), geniCancelKeyboard());
+      return;
+    }
+    try {
+      assertMinimumReward("website", reward, user.language);
+    } catch (error) {
+      await showFlowScreen(ctx, (error as Error).message, geniCancelKeyboard());
+      return;
+    }
+    setGeniDraft(ctx.from.id, { step: "workers", rewardPerWorker: reward });
+    await showFlowScreen(ctx, [
+      "Step 3 of 4",
+      "",
+      `Reward: ${formatMoneyDetail(reward, user.language)}`,
+      "",
+      "How many workers?",
+      "",
+      "Example:",
+      "100"
+    ].join("\n"), geniCancelKeyboard());
+    return;
+  }
+
+  if (draft.step === "workers") {
+    const workerLimit = Number(text);
+    if (!Number.isInteger(workerLimit) || workerLimit < 1 || workerLimit > 100000) {
+      await showFlowScreen(ctx, "Send a worker count from 1 to 100000. Example: 100", geniCancelKeyboard());
+      return;
+    }
+
     const now = new Date().toISOString();
     const link: GeniLink = {
       id: compactId("gl"),
-      name,
+      name: draft.name ?? "Website task",
       adminId: ctx.from.id,
       status: "active",
+      rewardPerWorker: draft.rewardPerWorker,
+      workerLimit,
       createdAt: now,
       updatedAt: now
     };
@@ -4185,11 +4254,11 @@ async function handleGeniDraftMessage(ctx: Context & { from: TelegramFrom; messa
       action: "geni_create",
       targetType: "geni_link",
       targetId: link.id,
-      note: link.name
+      note: `${link.name} website task draft`
     });
-    setGeniDraft(ctx.from.id, { step: "shortener", linkId: link.id, name: link.name });
+    setGeniDraft(ctx.from.id, { step: "shortener", linkId: link.id, name: link.name, workerLimit });
     await showFlowScreen(ctx, [
-      "Step 2 of 2",
+      "Step 4 of 4",
       "",
       "Copy this Final URL and paste it inside your paid shortener website as Destination URL.",
       "",
@@ -4197,7 +4266,7 @@ async function handleGeniDraftMessage(ctx: Context & { from: TelegramFrom; messa
       "",
       "After the shortener gives you a short link, paste that short link here.",
       "",
-      "Send skip if you want to add it later."
+      "The Website task will publish after you send the shortener URL."
     ].join("\n"), geniCancelKeyboard(link.id));
     return;
   }
@@ -4210,35 +4279,24 @@ async function handleGeniDraftMessage(ctx: Context & { from: TelegramFrom; messa
       return;
     }
 
-    const lower = text.toLowerCase();
-    if (lower !== "skip") {
-      try {
-        assertHttpUrl(text);
-      } catch (error) {
-        await showFlowScreen(ctx, [
-          (error as Error).message,
-          "",
-          "Send a valid http/https paid shortener URL, or send skip."
-        ].join("\n"), geniCancelKeyboard(link.id));
-        return;
-      }
+    try {
+      assertHttpUrl(text);
+    } catch (error) {
+      await showFlowScreen(ctx, [
+        (error as Error).message,
+        "",
+        "Send a valid http/https paid shortener URL."
+      ].join("\n"), geniCancelKeyboard(link.id));
+      return;
     }
 
-    const updated: GeniLink = {
-      ...link,
-      shortenerUrl: lower === "skip" ? link.shortenerUrl : text,
-      updatedAt: new Date().toISOString()
-    };
-    await store.upsertGeniLink(updated);
-    await addAdminAudit({
-      adminId: ctx.from.id,
-      action: lower === "skip" ? "geni_skip_shortener" : "geni_set_shortener",
-      targetType: "geni_link",
-      targetId: updated.id,
-      note: updated.name
-    });
-    geniDrafts.delete(ctx.from.id);
-    await showFlowScreen(ctx, lower === "skip" ? formatGeniLinkNeedsShortener(updated) : formatGeniLinkReady(updated), lower === "skip" ? geniMoreKeyboard(updated) : geniReadyKeyboard(updated));
+    try {
+      const updated = await publishGeniWebsiteTask(ctx, link, text);
+      geniDrafts.delete(ctx.from.id);
+      await showFlowScreen(ctx, formatGeniTaskReady(updated), geniReadyKeyboard(updated));
+    } catch (error) {
+      await showFlowScreen(ctx, (error as Error).message, geniCancelKeyboard(link.id));
+    }
     return;
   }
 
@@ -4326,6 +4384,80 @@ async function handleGeniDraftMessage(ctx: Context & { from: TelegramFrom; messa
     geniDrafts.delete(ctx.from.id);
     await showFlowScreen(ctx, formatGeniProfitCalculator(), geniProfitKeyboard());
   }
+}
+
+async function publishGeniWebsiteTask(ctx: Context & { from: TelegramFrom }, link: GeniLink, shortenerUrl: string): Promise<GeniLink> {
+  const user = await ensureUser(ctx.from);
+  const now = new Date().toISOString();
+
+  if (link.taskId) {
+    const task = store.snapshot().tasks.find((item) => item.id === link.taskId);
+    if (task) {
+      await store.updateTask({
+        ...task,
+        verificationTarget: shortenerUrl,
+        verificationTargetUrl: shortenerUrl,
+        updatedAt: now
+      });
+    }
+    const updated = { ...link, shortenerUrl, updatedAt: now };
+    await store.upsertGeniLink(updated);
+    await addAdminAudit({
+      adminId: ctx.from.id,
+      action: "geni_update_shortener",
+      targetType: "geni_link",
+      targetId: updated.id,
+      note: updated.name
+    });
+    return updated;
+  }
+
+  const rewardPerWorker = link.rewardPerWorker;
+  const workerLimit = link.workerLimit;
+  if (!rewardPerWorker || !workerLimit) {
+    throw new Error("GENI task draft is missing reward or worker count. Start again with /geni.");
+  }
+
+  const task = withTaskTargetMetadata(createTask({
+    id: generateTaskId(store.snapshot()),
+    buyerId: user.id,
+    title: link.name,
+    category: "website",
+    instructions: "Open the link, complete all shortener steps, and wait until the final page loads.",
+    rewardPerWorker,
+    workerLimit,
+    approvalType: "auto",
+    verificationType: "website_final_page",
+    verificationTarget: shortenerUrl
+  }));
+  assertEnoughWithdrawableForEscrow(user.id, escrowRequired(task), user.language);
+
+  await store.addTask(task);
+  await store.addTransaction(createTransaction({
+    userId: user.id,
+    type: "escrow_lock",
+    amount: escrowRequired(task),
+    taskId: task.id,
+    note: `GENI website task escrow: ${link.id}`
+  }));
+
+  const updated: GeniLink = {
+    ...link,
+    taskId: task.id,
+    shortenerUrl,
+    rewardPerWorker,
+    workerLimit,
+    updatedAt: now
+  };
+  await store.upsertGeniLink(updated);
+  await addAdminAudit({
+    adminId: ctx.from.id,
+    action: "geni_publish_website_task",
+    targetType: "task",
+    targetId: task.id,
+    note: `${link.name} ${formatMoneyDetail(escrowRequired(task), user.language)} escrow`
+  });
+  return updated;
 }
 
 function assertHttpUrl(value: string) {
@@ -4488,8 +4620,8 @@ function formatGeniSimpleHome(): string {
       "",
       "Status: Not set up",
       "",
-      "No tracking link yet.",
-      "Create a link first."
+      "No Website task yet.",
+      "Post a GENI Website task first."
     ].join("\n");
   }
 
@@ -4502,7 +4634,7 @@ function formatGeniSimpleHome(): string {
     "What do you want to do?",
     "",
     `Status: ${geniTrackingStatus()}`,
-    `Running links: ${active}`,
+    `Running Website tasks: ${active}`,
     `Clicked: ${stats.started}`,
     `Completed: ${stats.completed}`,
     `Estimated actual profit: ${formatUsd(geniActualProfit())}`,
@@ -4515,8 +4647,8 @@ function formatGeniSimpleHome(): string {
 
 function geniSimpleKeyboard() {
   return Markup.inlineKeyboard([
-    [Markup.button.callback("➕ Create Link", "geni:new"), Markup.button.callback("📊 Real Results", "geni:results")],
-    [Markup.button.callback("💹 Profit Calculator", "geni:profit"), Markup.button.callback("⏸ Stop Link", "geni:stop")],
+    [Markup.button.callback("➕ Post Website Task", "geni:new"), Markup.button.callback("📊 Real Results", "geni:results")],
+    [Markup.button.callback("💹 Profit Calculator", "geni:profit"), Markup.button.callback("⏸ Stop Task", "geni:stop")],
     [Markup.button.callback("🛡 Safety", "geni:safety"), Markup.button.callback("⚙️ Advanced", "geni:advanced")],
     [Markup.button.callback("⬅️ Admin Panel", "admin:dashboard")]
   ]);
@@ -4529,12 +4661,12 @@ function formatGeniAdvancedDashboard(): string {
   const archived = state.geniLinks.filter((link) => link.status === "archived").length;
   const stats = geniStats();
   return [
-    "🧪 GENI Short Link Lab",
+    "🧪 GENI Website Tasks",
     "",
     `Status: ${geniTrackingStatus()}`,
-    `Active links: ${active}`,
-    `Paused links: ${paused}`,
-    `Archived links: ${archived}`,
+    `Active tasks: ${active}`,
+    `Paused tasks: ${paused}`,
+    `Archived tasks: ${archived}`,
     "",
     `Today started: ${stats.todayStarted}`,
     `Today completed: ${stats.todayCompleted}`,
@@ -4542,13 +4674,13 @@ function formatGeniAdvancedDashboard(): string {
     `Telegram verified: ${stats.telegramVerified}`,
     `Suspect traffic: ${stats.suspect}`,
     "",
-    "Experimental admin-only tracking for paid shortener final URLs."
+    "Experimental Website task verification through paid shortener final pages."
   ].join("\n");
 }
 
 function geniAdvancedKeyboard() {
   return Markup.inlineKeyboard([
-    [Markup.button.callback("➕ New Link", "geni:new"), Markup.button.callback("🔗 Links", "geni:links")],
+    [Markup.button.callback("➕ New Website Task", "geni:new"), Markup.button.callback("📋 Tasks", "geni:links")],
     [Markup.button.callback("📊 Analytics", "geni:analytics"), Markup.button.callback("💹 Calculator", "geni:profit")],
     [Markup.button.callback("🛡 Fraud", "geni:fraud"), Markup.button.callback("🧾 Logs", "geni:logs")],
     [Markup.button.callback("🧹 Clear Test Data", "geni:clear")],
@@ -4566,7 +4698,7 @@ function geniClearConfirmKeyboard() {
 function geniCancelKeyboard(linkId?: string) {
   return Markup.inlineKeyboard([
     [Markup.button.callback("Cancel", "geni:cancel")],
-    linkId ? [Markup.button.callback("Open Link Card", `geni:link:${linkId}`)] : [Markup.button.callback("Dashboard", "geni:dashboard")]
+    linkId ? [Markup.button.callback("Open Task Card", `geni:link:${linkId}`)] : [Markup.button.callback("Dashboard", "geni:dashboard")]
   ]);
 }
 
@@ -4597,7 +4729,7 @@ function formatGeniSimpleResults(): string {
 
 function geniResultsKeyboard() {
   return Markup.inlineKeyboard([
-    [Markup.button.callback("🔗 Select Link", "geni:links"), Markup.button.callback("💹 Calculator", "geni:profit")],
+    [Markup.button.callback("📋 Select Task", "geni:links"), Markup.button.callback("💹 Calculator", "geni:profit")],
     [Markup.button.callback("🛡 Suspicious", "geni:safety"), Markup.button.callback("⚙️ Details", "geni:advanced")],
     [Markup.button.callback("⬅️ Back", "geni:dashboard")]
   ]);
@@ -4605,11 +4737,11 @@ function geniResultsKeyboard() {
 
 function formatGeniStopList(): string {
   const activeLinks = store.snapshot().geniLinks.filter((link) => link.status === "active");
-  if (activeLinks.length === 0) return "⏸ Stop Link\n\nNo running links right now.";
+  if (activeLinks.length === 0) return "⏸ Stop Task\n\nNo running GENI Website task right now.";
   return [
-    "⏸ Stop Link",
+    "⏸ Stop Task",
     "",
-    "Tap the link you want to stop.",
+    "Tap the Website task you want to stop.",
     "",
     ...activeLinks.slice(0, 8).map((link) => {
       const stats = geniStats(link.id);
@@ -4653,13 +4785,14 @@ function formatGeniLinks(): string {
   const links = store.snapshot().geniLinks
     .filter((link) => link.status !== "archived")
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
-  if (links.length === 0) return "🔗 GENI Links\n\nNo active links yet.";
+  if (links.length === 0) return "📋 GENI Website Tasks\n\nNo active tasks yet.";
   return [
-    "🔗 GENI Links",
+    "📋 GENI Website Tasks",
     "",
     ...links.slice(0, 12).map((link) => {
       const stats = geniStats(link.id);
-      return `${geniStatusIcon(link.status)} ${link.name}\n${shortId(link.id)} • ${stats.completed}/${stats.started} completed • ${stats.completionRate}%`;
+      const taskId = link.taskId ? `Task ${link.taskId}` : shortId(link.id);
+      return `${geniStatusIcon(link.status)} ${link.name}\n${taskId} • ${stats.completed}/${stats.started} completed • ${stats.completionRate}%`;
     })
   ].join("\n\n");
 }
@@ -4670,7 +4803,7 @@ function geniLinksKeyboard() {
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
     .slice(0, 10)
     .map((link) => [Markup.button.callback(`${geniStatusIcon(link.status)} ${link.name.slice(0, 28)}`, `geni:link:${link.id}`)]);
-  rows.push([Markup.button.callback("➕ New Link", "geni:new")]);
+  rows.push([Markup.button.callback("➕ New Website Task", "geni:new")]);
   rows.push([Markup.button.callback("⬅️ Dashboard", "geni:dashboard")]);
   return Markup.inlineKeyboard(rows);
 }
@@ -4803,11 +4936,15 @@ function formatGeniLogs(): string {
 
 function formatGeniLinkDetail(link: GeniLink): string {
   const stats = geniStats(link.id);
+  const task = link.taskId ? store.snapshot().tasks.find((item) => item.id === link.taskId) : undefined;
   return [
-    "🧪 Link",
+    "🧪 Website Task",
     "",
-    `Name: ${link.name}`,
+    task ? `Task ID: ${task.id}` : undefined,
+    `Title: ${link.name}`,
     `Status: ${link.status === "active" ? "Running" : link.status}`,
+    task ? `Reward: ${formatMoneyDetail(task.rewardPerWorker, "en")}` : undefined,
+    task ? `Workers: ${task.completedCount}/${task.workerLimit}` : undefined,
     "",
     `Clicked: ${stats.started}`,
     `Completed: ${stats.completed}`,
@@ -4819,31 +4956,39 @@ function formatGeniLinkDetail(link: GeniLink): string {
     `Estimated actual profit: ${formatUsd(geniActualProfit(link.id))}`,
     "This is tracking estimate only, not paid balance.",
     "",
-    "Share this Tracking Link:",
-    geniStartUrl(link.id)
-  ].join("\n");
+    "Website task URL:",
+    task ? geniStartUrl(link.id) : "Task is not published yet."
+  ].filter((line) => line !== undefined).join("\n");
+}
+
+function formatGeniTaskReady(link: GeniLink): string {
+  const task = link.taskId ? store.snapshot().tasks.find((item) => item.id === link.taskId) : undefined;
+  return [
+    "✅ Website task published",
+    "",
+    task ? `Task ID: ${task.id}` : undefined,
+    `Title: ${link.name}`,
+    task ? `Reward: ${formatMoneyDetail(task.rewardPerWorker, "en")}` : undefined,
+    task ? `Workers: ${task.workerLimit}` : undefined,
+    "",
+    "Category: Website",
+    "Verification: GENI Final Page",
+    "",
+    "Workers will see this as a normal Website task in Earn Money."
+  ].filter((line) => line !== undefined).join("\n");
 }
 
 function formatGeniLinkReady(link: GeniLink): string {
-  return [
-    "✅ Done",
-    "",
-    "Now share this Tracking Link:",
-    geniStartUrl(link.id),
-    "",
-    "Only share this link.",
-    "",
-    "Bot will count who clicked and who completed."
-  ].join("\n");
+  return formatGeniTaskReady(link);
 }
 
 function formatGeniLinkNeedsShortener(link: GeniLink): string {
   return [
-    "🔗 Link saved",
+    "🔗 Task draft saved",
     "",
-    "Shortener URL is not added yet.",
+    "Shortener URL is not added yet, so the Website task is not published.",
     "",
-    "Before sharing, open More and add the shortener URL.",
+    "Open More and add the shortener URL to publish the task.",
     "",
     "Final URL for your shortener:",
     geniFinalUrl(link.id)
@@ -4852,11 +4997,11 @@ function formatGeniLinkNeedsShortener(link: GeniLink): string {
 
 function formatGeniLinkUrls(link: GeniLink): string {
   return [
-    "🔗 GENI URLs",
+    "🔗 GENI Task URLs",
     "",
     `Name: ${link.name}`,
     "",
-    "Start URL:",
+    "Task open URL:",
     geniStartUrl(link.id),
     "",
     "Final URL:",
@@ -4864,8 +5009,8 @@ function formatGeniLinkUrls(link: GeniLink): string {
     "",
     "How to use:",
     "1. Use Final URL as the paid shortener destination.",
-    "2. Paste the paid shortener URL back into this link card.",
-    "3. Share Start URL to track start + completion."
+    "2. Paste the paid shortener URL back here.",
+    "3. Workers open the normal Website task from Earn Money."
   ].join("\n");
 }
 
@@ -4876,13 +5021,13 @@ function geniLinkKeyboard(link: GeniLink) {
   return Markup.inlineKeyboard([
     [Markup.button.callback("📊 Result", `geni:link:${link.id}`), Markup.button.callback("💹 Profit", "geni:profit")],
     [statusButton, Markup.button.callback("🔧 More", `geni:urls:${link.id}`)],
-    [Markup.button.callback("🔗 Links", "geni:links"), Markup.button.callback("⬅️ Home", "geni:dashboard")]
+    [Markup.button.callback("📋 Tasks", "geni:links"), Markup.button.callback("⬅️ Home", "geni:dashboard")]
   ]);
 }
 
 function geniReadyKeyboard(link: GeniLink) {
   return Markup.inlineKeyboard([
-    [Markup.button.callback("📊 Result", `geni:link:${link.id}`), Markup.button.callback("🔗 All Links", "geni:links")],
+    [Markup.button.callback("📊 Result", `geni:link:${link.id}`), Markup.button.callback("📋 All Tasks", "geni:links")],
     [Markup.button.callback("⬅️ Home", "geni:dashboard")]
   ]);
 }
@@ -4904,8 +5049,21 @@ function geniStatusIcon(status: GeniLink["status"]): string {
   return "⚫";
 }
 
-function geniStartUrl(linkId: string): string {
-  return new URL(`/geni/go/${encodeURIComponent(linkId)}`, publicBaseUrl()).toString();
+async function syncGeniTaskStatus(link: GeniLink) {
+  if (!link.taskId) return;
+  const task = store.snapshot().tasks.find((item) => item.id === link.taskId);
+  if (!task || task.status === "completed" || task.status === "cancelled") return;
+  await store.updateTask({
+    ...task,
+    status: link.status === "active" ? "active" : "paused",
+    updatedAt: new Date().toISOString()
+  });
+}
+
+function geniStartUrl(linkId: string, workerId?: number): string {
+  const url = new URL(`/geni/go/${encodeURIComponent(linkId)}`, publicBaseUrl());
+  if (workerId !== undefined) url.searchParams.set("workerId", String(workerId));
+  return url.toString();
 }
 
 function geniFinalUrl(linkId: string): string {
@@ -6227,11 +6385,13 @@ async function handleGeniStart(request: IncomingMessage, response: ServerRespons
   const now = new Date().toISOString();
   const userAgent = String(request.headers["user-agent"] ?? "unknown").slice(0, 220);
   const deviceInfo = deviceInfoFromUserAgent(userAgent);
+  const workerId = Number(requestUrl.searchParams.get("workerId"));
   const visit: GeniVisit = {
     id: compactId("gv"),
     linkId: link.id,
     sessionId: compactId("gs"),
     status: "started",
+    workerId: Number.isFinite(workerId) ? workerId : undefined,
     ip: requestIp(request),
     userAgent,
     country: countryFromRequest(request),
@@ -6312,7 +6472,12 @@ async function handleGeniDone(request: IncomingMessage, response: ServerResponse
     };
 
   await store.upsertGeniVisit(visit);
-  writeHtml(response, 200, renderGeniDonePage(link, visit));
+  const payoutResult = visit.workerId ? await completeGeniVisitTask(link, visit, visit.workerId) : "not_task";
+  if (payoutResult === "paid" && visit.workerId) {
+    const task = link.taskId ? store.snapshot().tasks.find((item) => item.id === link.taskId) : undefined;
+    if (task) await sendTelegramMessageSafe(visit.workerId, formatAutoRewardMessage(visit.workerId, "GENI final page verified", task.rewardPerWorker));
+  }
+  writeHtml(response, 200, renderGeniDonePage(link, visit, payoutResult));
 }
 
 async function handleGeniTelegramVerify(ctx: Context & { from: TelegramFrom }, payload: string) {
@@ -6326,17 +6491,58 @@ async function handleGeniTelegramVerify(ctx: Context & { from: TelegramFrom }, p
   const link = store.snapshot().geniLinks.find((item) => item.id === visit.linkId);
   const updated: GeniVisit = {
     ...visit,
+    workerId: visit.workerId ?? ctx.from.id,
     telegramUserId: ctx.from.id,
     updatedAt: new Date().toISOString()
   };
   await store.upsertGeniVisit(updated);
+  const payoutResult = link ? await completeGeniVisitTask(link, updated, ctx.from.id) : "not_task";
+  const payoutLine = payoutResult === "paid"
+    ? "Task payout added."
+    : payoutResult === "already"
+      ? "Task was already submitted."
+      : payoutResult === "flagged"
+        ? "Visit is flagged, so auto payout was not released."
+        : "Your Telegram account is now attached to this completed visit.";
   await ctx.reply([
-    "🧪 GENI visit verified",
+    "🧪 GENI final page verified",
     "",
     `Link: ${link?.name ?? visit.linkId}`,
     `Status: ${visit.status}`,
-    "Your Telegram account is now attached to this completed visit."
+    payoutLine
   ].join("\n"));
+}
+
+async function completeGeniVisitTask(link: GeniLink, visit: GeniVisit, workerId: number): Promise<"paid" | "already" | "flagged" | "not_task" | "missing_task" | "not_completed"> {
+  if (!link.taskId) return "not_task";
+  if (visit.status !== "completed") return "not_completed";
+  if (visit.suspectReason) return "flagged";
+
+  const task = store.snapshot().tasks.find((item) => item.id === link.taskId);
+  if (!task || task.verificationType !== "website_final_page") return "missing_task";
+  if (task.status !== "active" || task.completedCount >= task.workerLimit) return "not_task";
+
+  const existingSubmission = store.snapshot().submissions.find((submission) =>
+    submission.taskId === task.id &&
+    submission.workerId === workerId
+  );
+  if (existingSubmission) return "already";
+
+  await store.addVerificationEvent(createVerificationEvent({
+    taskId: task.id,
+    workerId,
+    type: "website_final_page",
+    status: "passed",
+    metadata: { source: "geni_final_page", linkId: link.id, visitId: visit.id }
+  }));
+
+  try {
+    await completeAutoTask(task, workerId, `geni_final_page:${visit.id}`, "GENI final page verified");
+    return "paid";
+  } catch (error) {
+    if ((error as Error).message.includes("already submitted")) return "already";
+    return "not_task";
+  }
 }
 
 function geniStartSuspectReason(request: IncomingMessage): string | undefined {
@@ -6521,11 +6727,18 @@ function stringOrUndefined(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
-function renderGeniDonePage(link: GeniLink, visit: GeniVisit): string {
+function renderGeniDonePage(link: GeniLink, visit: GeniVisit, payoutResult?: string): string {
   const verifyUrl = telegramBotStartUrl(`geni_${visit.id}`);
   const verifyButton = verifyUrl
     ? `<a class="button" href="${escapeHtml(verifyUrl)}">Verify in Telegram</a>`
     : "";
+  const payoutNotice = payoutResult === "paid"
+    ? `<p class="success">Task verified. Return to Telegram.</p>`
+    : payoutResult === "already"
+      ? `<p class="success">This task was already verified.</p>`
+      : payoutResult === "flagged"
+        ? `<p class="notice">This visit was recorded, but it is flagged for review.</p>`
+        : "";
   const suspect = visit.suspectReason
     ? `<p class="notice">Review flag: ${escapeHtml(visit.suspectReason)}</p>`
     : "";
@@ -6550,6 +6763,7 @@ function renderGeniDonePage(link: GeniLink, visit: GeniVisit): string {
     .value { font-weight: 700; overflow-wrap: anywhere; }
     .button { display: inline-block; margin-top: 8px; padding: 12px 18px; border-radius: 8px; background: #0f766e; color: #ffffff; text-decoration: none; font-weight: 700; }
     .notice { color: #92400e; background: #fff7ed; border: 1px solid #fed7aa; border-radius: 8px; padding: 10px 12px; }
+    .success { color: #065f46; background: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 8px; padding: 10px 12px; }
     @media (max-width: 520px) { .panel { padding: 22px; } .meta { grid-template-columns: 1fr; } h1 { font-size: 26px; } }
   </style>
 </head>
@@ -6564,6 +6778,7 @@ function renderGeniDonePage(link: GeniLink, visit: GeniVisit): string {
       <div class="item"><span class="label">Country</span><span class="value">${escapeHtml(visit.country ?? "Unknown")}</span></div>
       <div class="item"><span class="label">Device</span><span class="value">${escapeHtml(visit.deviceType ?? "Unknown")}</span></div>
     </div>
+    ${payoutNotice}
     ${suspect}
     ${verifyButton}
   </main>
@@ -6766,6 +6981,53 @@ async function verifyWebsiteVisit(ctx: Context & { from: TelegramFrom }, taskId:
 
   await completeAutoTask(task, ctx.from.id, "website_visit_tracked", "Website visit tracked");
   await ctx.reply(formatAutoRewardMessage(ctx.from.id, "Website visit verified", task.rewardPerWorker));
+}
+
+async function verifyGeniFinalPage(ctx: Context & { from: TelegramFrom }, taskId: string) {
+  const task = store.snapshot().tasks.find((item) => item.id === taskId);
+  if (!task) {
+    await ctx.reply("Task not found.");
+    return;
+  }
+
+  const link = store.snapshot().geniLinks.find((item) => item.taskId === task.id);
+  if (!link) {
+    await ctx.reply("GENI tracking is not connected to this task yet.");
+    return;
+  }
+
+  const visit = [...store.snapshot().geniVisits]
+    .reverse()
+    .find((item) =>
+      item.linkId === link.id &&
+      item.status === "completed" &&
+      (item.workerId === ctx.from.id || item.telegramUserId === ctx.from.id)
+    );
+
+  if (!visit) {
+    await ctx.reply([
+      "Final page has not been detected yet.",
+      "Open the task link, complete the shortener steps, wait for the final page, then press Verify Now again.",
+      "",
+      `Open: ${geniStartUrl(link.id, ctx.from.id)}`
+    ].join("\n"));
+    return;
+  }
+
+  const result = await completeGeniVisitTask(link, visit, ctx.from.id);
+  if (result === "paid") {
+    await ctx.reply(formatAutoRewardMessage(ctx.from.id, "GENI final page verified", task.rewardPerWorker));
+    return;
+  }
+  if (result === "already") {
+    await ctx.reply("You already submitted this task.");
+    return;
+  }
+  if (result === "flagged") {
+    await ctx.reply("Final page was detected, but this visit is flagged for review and cannot be auto-paid.");
+    return;
+  }
+  await ctx.reply("Final page was detected, but the task is not ready for auto payout.");
 }
 
 async function handleQuizAnswer(ctx: Context & { from: TelegramFrom; message: unknown }, taskId: string) {
