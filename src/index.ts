@@ -59,7 +59,15 @@ const telegramWebhookPath = "/telegram/webhook";
 let telegramWebhookCallback: ((request: IncomingMessage, response: ServerResponse) => Promise<void>) | undefined;
 
 createServer((request, response) => {
-  void handleHttpRequest(request, response);
+  void handleHttpRequest(request, response).catch((error) => {
+    console.error("HTTP request failed", error);
+    if (!response.headersSent) {
+      response.writeHead(500, { "content-type": "application/json" });
+      response.end(JSON.stringify({ ok: false, error: "internal_error" }));
+      return;
+    }
+    response.destroy();
+  });
 }).listen(config.port, () => {
   console.log(`Health server listening on ${config.port}`);
 });
@@ -201,6 +209,16 @@ const botRuntime = {
   launchState: "starting" as "starting" | "running" | "stopped" | "failed",
   lastError: undefined as string | undefined
 };
+
+process.on("unhandledRejection", (error) => {
+  botRuntime.lastError = error instanceof Error ? error.message : String(error);
+  console.error("Unhandled rejection", error);
+});
+
+process.on("uncaughtException", (error) => {
+  botRuntime.lastError = error instanceof Error ? error.message : String(error);
+  console.error("Uncaught exception", error);
+});
 
 type ReplyMarkup = Parameters<Context["reply"]>[1];
 type UserFacingContext = Context & { from: TelegramFrom };
