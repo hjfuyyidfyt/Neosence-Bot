@@ -61,6 +61,7 @@ export function getOrCreateUser(state: StoreState, from: {
       username: from.username ?? existing.username,
       firstName: from.first_name ?? existing.firstName,
       language: existing.language ?? "en",
+      buttonStyle: existing.buttonStyle ?? "inline",
       updatedAt: now()
     };
   }
@@ -71,6 +72,7 @@ export function getOrCreateUser(state: StoreState, from: {
     firstName: from.first_name,
     language: "en",
     mode: "freelancer",
+    buttonStyle: "inline",
     isBanned: false,
     trustLevel: "new",
     createdAt: now(),

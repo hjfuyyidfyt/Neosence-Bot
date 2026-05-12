@@ -25,7 +25,7 @@ import {
   visibleTasks,
   walletSummary
 } from "./services.js";
-import { formatTask, mainMenu, modeMenu, taskActionButtons, taskHtmlExtra } from "./ui.js";
+import { formatTask, mainMenu as inlineMainMenu, modeMenu as inlineModeMenu, taskActionButtons, taskHtmlExtra } from "./ui.js";
 import { getMessages, t } from "./messages.js";
 import { formatMoney, formatMoneyDetail, roundMoney } from "./money.js";
 import type { MessageBundle } from "./messages.js";
@@ -48,6 +48,7 @@ import type {
   TelegramInviteLinkRecord,
   TelegramMembershipRecord,
   TrackedChat,
+  ButtonStyle,
   UserProfile,
   VerificationType,
   Withdrawal
@@ -154,7 +155,8 @@ const PUBLIC_BOT_COMMANDS = [
   { command: "wallet", description: "💰 View wallet and withdrawals" },
   { command: "profile", description: "👤 View profile and trust score" },
   { command: "language", description: "🌐 Change language" },
-  { command: "cancel", description: "✖️ Cancel current flow" }
+  { command: "cancel", description: "✖️ Cancel current flow" },
+  { command: "buttons", description: "Keyboard style" }
 ];
 const ADMIN_CONSOLE_COMMANDS = [
   { command: "admin", description: "🛠️ Open admin dashboard" },
@@ -201,6 +203,101 @@ const botRuntime = {
 };
 
 type ReplyMarkup = Parameters<Context["reply"]>[1];
+type UserFacingContext = Context & { from: TelegramFrom };
+type ReplyButtonAction =
+  | "home"
+  | "earn"
+  | "wallet"
+  | "profile"
+  | "referrals"
+  | "jobs"
+  | "post"
+  | "campaigns"
+  | "submissions"
+  | "mode"
+  | "language"
+  | "support"
+  | "button_style"
+  | "style_inline"
+  | "style_reply"
+  | "language_en"
+  | "language_bn"
+  | "mode_freelancer"
+  | "mode_buyer"
+  | "earn_categories"
+  | "earn_telegram"
+  | "earn_website"
+  | "earn_all"
+  | "earn_skip"
+  | "earn_reset"
+  | "task_action"
+  | "deposit"
+  | "deposit_bkash"
+  | "deposit_binance"
+  | "deposit_trc20"
+  | "deposit_upi"
+  | "withdraw_all"
+  | "withdraw_custom"
+  | "change_payout"
+  | "withdraw_history"
+  | "wizard_auto_join"
+  | "wizard_timer_visit"
+  | "wizard_manual_proof"
+  | "wizard_timer_30"
+  | "wizard_timer_60"
+  | "wizard_timer_120"
+  | "wizard_publish"
+  | "wizard_cancel"
+  | "back";
+
+const replyEarnSessions = new Map<number, { category: string; taskId?: string; updatedAt: number }>();
+const replyButtonActions: Record<string, ReplyButtonAction> = {
+  "🏠 home": "home",
+  "⬅️ back": "back",
+  "💼 earn": "earn",
+  "💰 wallet": "wallet",
+  "👤 profile": "profile",
+  "🤝 referrals": "referrals",
+  "📌 my jobs": "jobs",
+  "➕ post task": "post",
+  "📊 campaigns": "campaigns",
+  "🧾 submissions": "submissions",
+  "🔁 mode": "mode",
+  "🌐 language": "language",
+  "🛟 support": "support",
+  "⌨️ button style": "button_style",
+  "inline buttons": "style_inline",
+  "reply keyboard": "style_reply",
+  "🇺🇸 english": "language_en",
+  "🇧🇩 bangla": "language_bn",
+  "💼 freelancer": "mode_freelancer",
+  "📣 buyer": "mode_buyer",
+  "📂 categories": "earn_categories",
+  "📢 telegram": "earn_telegram",
+  "🌐 website": "earn_website",
+  "📋 all tasks": "earn_all",
+  "⏭ skip": "earn_skip",
+  "↩️ show skipped": "earn_reset",
+  "✅ verify now": "task_action",
+  "📤 submit proof": "task_action",
+  "💳 deposit": "deposit",
+  "bkash": "deposit_bkash",
+  "binance uid": "deposit_binance",
+  "trc20": "deposit_trc20",
+  "upi": "deposit_upi",
+  "🏦 withdraw all": "withdraw_all",
+  "✏️ custom amount": "withdraw_custom",
+  "🔄 change payout": "change_payout",
+  "🧾 withdrawal history": "withdraw_history",
+  "auto join": "wizard_auto_join",
+  "timer visit": "wizard_timer_visit",
+  "manual proof": "wizard_manual_proof",
+  "30s": "wizard_timer_30",
+  "60s": "wizard_timer_60",
+  "120s": "wizard_timer_120",
+  "publish task": "wizard_publish",
+  "cancel": "wizard_cancel"
+};
 
 bot.use(async (ctx, next) => {
   if (!ctx.from || isAdminUser(ctx.from.id)) {
@@ -242,12 +339,17 @@ bot.start(async (ctx) => {
 bot.command("mode", async (ctx) => {
   const user = await ensureUser(ctx.from);
   const messages = getMessages(user.language);
-  await ctx.reply(messages.start.chooseMode, modeMenu(user.language));
+  await ctx.reply(messages.start.chooseMode, modeMenu(user.language, user.buttonStyle));
 });
 
 bot.command("language", async (ctx) => {
   const user = await ensureUser(ctx.from);
-  await ctx.reply(formatLanguageStatus(user.language), languageKeyboard(user.language));
+  await ctx.reply(formatLanguageStatus(user.language), languageKeyboardFor(user));
+});
+
+bot.command("buttons", async (ctx) => {
+  const user = await ensureUser(ctx.from);
+  await showButtonStyleScreen(ctx, user);
 });
 
 bot.command("earn", async (ctx) => {
@@ -257,7 +359,7 @@ bot.command("earn", async (ctx) => {
 
 bot.command("wallet", async (ctx) => {
   const user = await ensureUser(ctx.from);
-  await ctx.reply(formatWallet(user.id, user.mode, user.language));
+  await ctx.reply(formatWallet(user.id, user.mode, user.language), walletKeyboard(user));
 });
 
 bot.command("profile", async (ctx) => {
@@ -267,15 +369,7 @@ bot.command("profile", async (ctx) => {
 
 bot.command("cancel", async (ctx) => {
   await ensureUser(ctx.from);
-  taskDrafts.delete(ctx.from.id);
-  proofWaiters.delete(ctx.from.id);
-  quizWaiters.delete(ctx.from.id);
-  codeWaiters.delete(ctx.from.id);
-  payoutSetupWaiters.delete(ctx.from.id);
-  customWithdrawWaiters.delete(ctx.from.id);
-  depositDrafts.delete(ctx.from.id);
-  supportWaiters.delete(ctx.from.id);
-  geniDrafts.delete(ctx.from.id);
+  clearUserFlows(ctx.from.id);
   await ctx.reply(userMessages(ctx.from.id).common.currentInputCancelled);
 });
 
@@ -957,6 +1051,12 @@ bot.action("earn:categories", async (ctx) => {
   await showEarn(ctx);
 });
 
+bot.action(/^buttons:(inline|reply)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const user = await ensureUser(ctx.from);
+  await setButtonStyle(ctx, user, ctx.match[1] as ButtonStyle);
+});
+
 bot.action("menu:post", async (ctx) => {
   await ctx.answerCbQuery();
   const user = await ensureUser(ctx.from);
@@ -1041,7 +1141,7 @@ bot.action("menu:mode", async (ctx) => {
   await ctx.answerCbQuery();
   const user = await ensureUser(ctx.from);
   const messages = getMessages(user.language);
-  await showScreen(ctx, messages.start.chooseMode, modeMenu(user.language));
+  await showScreen(ctx, messages.start.chooseMode, modeMenu(user.language, user.buttonStyle));
 });
 
 bot.action(/^language:(en|bn)$/, async (ctx) => {
@@ -1198,7 +1298,7 @@ bot.action("menu:profile", async (ctx) => {
 bot.action("menu:language", async (ctx) => {
   await ctx.answerCbQuery();
   const user = await ensureUser(ctx.from);
-  await showScreen(ctx, formatLanguageStatus(user.language), languageKeyboard(user.language));
+  await showScreen(ctx, formatLanguageStatus(user.language), languageKeyboardFor(user));
 });
 
 bot.action("menu:support", async (ctx) => {
@@ -1656,10 +1756,8 @@ bot.on("chat_member", async (ctx) => {
 bot.action(/^mode:(freelancer|buyer)$/, async (ctx) => {
   const mode = ctx.match[1] as "freelancer" | "buyer";
   const user = await ensureUser(ctx.from);
-  const updatedUser = switchMode(user, mode);
-  await store.upsertUser(updatedUser);
   await ctx.answerCbQuery(`Mode changed to ${mode}`);
-  await showScreen(ctx, user.language === "bn" ? `ওয়ার্কস্পেস পরিবর্তন হয়েছে: ${formatMode(mode, user.language)}` : `Workspace changed: ${formatMode(mode, user.language)}`, mainMenu(updatedUser));
+  await setUserMode(ctx, user, mode);
 });
 
 bot.action(/^wizard:approval:(manual|auto)$/, async (ctx) => {
@@ -1816,45 +1914,8 @@ bot.action(/^wizard:verification:(telegram_join|website_visit|website_webhook|ap
 bot.action("wizard:confirm", async (ctx) => {
   await ctx.answerCbQuery();
   const user = await ensureUser(ctx.from);
-  const messages = getMessages(user.language);
   const draft = getTaskDraft(ctx.from.id);
-  if (!draft || !isCompleteDraft(draft)) {
-    await ctx.reply(messages.common.incompleteDraft);
-    return;
-  }
-
-  const task = withTaskTargetMetadata(createTask({
-    id: generateTaskId(store.snapshot()),
-    buyerId: user.id,
-    title: draft.title,
-    category: draft.category,
-    instructions: draft.instructions,
-    rewardPerWorker: draft.rewardPerWorker,
-    workerLimit: draft.workerLimit,
-    approvalType: draft.approvalType,
-    verificationType: draft.verificationType,
-    verificationTarget: draft.verificationTarget,
-    websiteVisitSeconds: draft.websiteVisitSeconds
-  }));
-  try {
-    assertCampaignTargetAllowed(task);
-    assertEnoughWithdrawableForEscrow(user.id, escrowRequired(task), user.language);
-  } catch (error) {
-    await ctx.reply((error as Error).message);
-    return;
-  }
-
-  await store.addTask(task);
-  await store.addTransaction(createTransaction({
-    userId: user.id,
-    type: "escrow_lock",
-    amount: escrowRequired(task),
-    taskId: task.id,
-    note: "MVP records escrow lock. Connect deposit validation before public launch."
-  }));
-  taskDrafts.delete(ctx.from.id);
-
-  await ctx.reply(`${messages.taskWizard.published}\n\n${formatTask(task, user.language)}\n\n${messages.wallet.escrowLocked} ${formatMoneyDetail(escrowRequired(task), user.language)}`, taskHtmlExtra(mainMenu(user)));
+  await publishTaskDraft(ctx, user, draft);
 });
 
 bot.action("wizard:cancel", async (ctx) => {
@@ -2195,67 +2256,19 @@ bot.action(/^task:(.+)$/, async (ctx) => {
 
 bot.action(/^proof:(.+)$/, async (ctx) => {
   await ctx.answerCbQuery();
-  await ensureUser(ctx.from);
-  proofWaiters.set(ctx.from.id, ctx.match[1]);
-  await ctx.reply("Send proof now: screenshot caption, text, username, or link. Your next message will be saved as proof.");
+  await beginProofSubmission(ctx, ctx.match[1]);
 });
 
 bot.action(/^verify:(.+)$/, async (ctx) => {
   await ctx.answerCbQuery();
-  await ensureUser(ctx.from);
-  const cooldownKey = `${ctx.from.id}:${ctx.match[1]}`;
-  const lastVerifyAt = verifyCooldowns.get(cooldownKey) ?? 0;
-  if (Date.now() - lastVerifyAt < VERIFY_COOLDOWN_MS) {
-    await ctx.reply("Please wait. Verify Now has a 15-second cooldown.");
-    return;
-  }
-  verifyCooldowns.set(cooldownKey, Date.now());
-  const task = store.snapshot().tasks.find((item) => item.id === ctx.match[1]);
-  if (!task) {
-    await ctx.reply("Task not found.");
-    return;
-  }
-
-  if (task.verificationType === "telegram_join") {
-    await verifyTelegramJoin(ctx, task.id);
-    return;
-  }
-
-  if (task.verificationType === "website_visit") {
-    await verifyWebsiteVisit(ctx, task.id);
-    return;
-  }
-
-  if (task.verificationType === "website_final_page") {
-    await verifyGeniFinalPage(ctx, task.id);
-    return;
-  }
-
-  if (task.verificationType === "quiz") {
-    quizWaiters.set(ctx.from.id, task.id);
-    await ctx.reply("Send the quiz answer/code. Correct answers are rewarded instantly.");
-    return;
-  }
-
-  if (task.verificationType === "in_app_code") {
-    codeWaiters.set(ctx.from.id, task.id);
-    await ctx.reply("Send the in-app verification code. Correct codes are rewarded instantly.");
-    return;
-  }
-
-  if (task.verificationType === "website_webhook" || task.verificationType === "app_attribution") {
-    await ctx.reply([
-      "This task is verified by the buyer's API/webhook.",
-      "Complete the required action on the website/app. Neosence will pay automatically when the buyer system confirms it."
-    ].join("\n"));
-    return;
-  }
-
-  await ctx.reply("This auto verification integration is not connected yet. Telegram join, website timer, in-app code, and webhook/API verification are ready now.");
+  await verifyTaskById(ctx, ctx.match[1]);
 });
 
 bot.on("message", async (ctx, next) => {
   if (!ctx.from) return next();
+  const replyButtonText = extractText(ctx.message);
+  if (await handleReplyKeyboardAction(ctx, replyButtonText)) return;
+
   const payoutSetup = payoutSetupWaiters.get(ctx.from.id);
   if (payoutSetup) {
     await handlePayoutAccountMessage(ctx, payoutSetup);
@@ -2485,8 +2498,9 @@ async function addAdminAudit(input: {
 async function showScreen(ctx: Context, text: string, extra?: ReplyMarkup) {
   if (ctx.callbackQuery) {
     try {
-      await ctx.editMessageText(text, extra as Parameters<Context["editMessageText"]>[1]);
+      await ctx.editMessageText(text, editSafeExtra(extra) as Parameters<Context["editMessageText"]>[1]);
       rememberActiveScreen(ctx);
+      if (isReplyKeyboardExtra(extra)) await ctx.reply("Keyboard updated.", extra);
       return;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -2494,6 +2508,18 @@ async function showScreen(ctx: Context, text: string, extra?: ReplyMarkup) {
         console.warn("Falling back to reply for screen update", message);
       } else {
         return;
+      }
+    }
+  }
+
+  if (ctx.from && isReplyKeyboardExtra(extra)) {
+    const active = activeScreenMessages.get(ctx.from.id);
+    if (active) {
+      try {
+        await ctx.telegram.editMessageText(active.chatId, active.messageId, undefined, text, editSafeExtra(extra) as Parameters<typeof ctx.telegram.editMessageText>[4]);
+        return;
+      } catch {
+        activeScreenMessages.delete(ctx.from.id);
       }
     }
   }
@@ -2514,7 +2540,7 @@ async function showFlowScreen(ctx: Context & { from: TelegramFrom }, text: strin
   const active = activeScreenMessages.get(ctx.from.id);
   if (active) {
     try {
-      await ctx.telegram.editMessageText(active.chatId, active.messageId, undefined, text, extra as Parameters<typeof ctx.telegram.editMessageText>[4]);
+      await ctx.telegram.editMessageText(active.chatId, active.messageId, undefined, text, editSafeExtra(extra) as Parameters<typeof ctx.telegram.editMessageText>[4]);
       return;
     } catch (error) {
       console.warn("Falling back to reply for flow screen", error instanceof Error ? error.message : String(error));
@@ -2532,6 +2558,449 @@ async function deleteUserInputMessage(ctx: Context) {
   }
 }
 
+function clearUserFlows(userId: number) {
+  taskDrafts.delete(userId);
+  proofWaiters.delete(userId);
+  quizWaiters.delete(userId);
+  codeWaiters.delete(userId);
+  payoutSetupWaiters.delete(userId);
+  customWithdrawWaiters.delete(userId);
+  depositDrafts.delete(userId);
+  supportWaiters.delete(userId);
+  geniDrafts.delete(userId);
+}
+
+async function handleReplyKeyboardAction(ctx: UserFacingContext & { message: unknown }, text: string | undefined): Promise<boolean> {
+  if (!text || text.startsWith("/")) return false;
+
+  const action = replyButtonActions[normalizeReplyButtonText(text)];
+  if (!action) return false;
+
+  const user = await ensureUser(ctx.from);
+  await deleteUserInputMessage(ctx);
+  const taskDraft = getTaskDraft(user.id);
+  if (taskDraft && await handleTaskWizardReplyAction(ctx, user, taskDraft, action)) return true;
+  if (action === "wizard_cancel") {
+    clearUserFlows(user.id);
+    await showScreen(ctx, getMessages(user.language).common.currentInputCancelled, mainMenu(user));
+    return true;
+  }
+  if (action.startsWith("wizard_")) {
+    await showScreen(ctx, user.mode === "buyer" ? getMessages(user.language).taskWizard.chooseCategory : getMessages(user.language).common.switchToBuyer, mainMenu(user));
+    return true;
+  }
+
+  if (action === "home" || action === "back") {
+    await showScreen(ctx, homeText(user), mainMenu(user));
+    return true;
+  }
+
+  if (action === "button_style") {
+    await showButtonStyleScreen(ctx, user);
+    return true;
+  }
+
+  if (action === "style_inline" || action === "style_reply") {
+    await setButtonStyle(ctx, user, action === "style_reply" ? "reply" : "inline");
+    return true;
+  }
+
+  if (action === "language") {
+    await showScreen(ctx, formatLanguageStatus(user.language), languageKeyboardFor(user));
+    return true;
+  }
+
+  if (action === "language_en" || action === "language_bn") {
+    await setUserLanguage(ctx, user, action === "language_bn" ? "bn" : "en");
+    return true;
+  }
+
+  if (action === "mode") {
+    await showScreen(ctx, getMessages(user.language).start.chooseMode, modeMenu(user.language, user.buttonStyle));
+    return true;
+  }
+
+  if (action === "mode_freelancer" || action === "mode_buyer") {
+    await setUserMode(ctx, user, action === "mode_buyer" ? "buyer" : "freelancer");
+    return true;
+  }
+
+  if (action === "earn") {
+    await showEarn(ctx);
+    return true;
+  }
+
+  if (action === "earn_categories") {
+    clearEarnSkips(user.id);
+    await showEarn(ctx);
+    return true;
+  }
+
+  if (action === "earn_telegram" || action === "earn_website" || action === "earn_all") {
+    const category = action === "earn_telegram" ? "telegram" : action === "earn_website" ? "website" : "all";
+    await showEarnCategory(ctx, category);
+    return true;
+  }
+
+  if (action === "earn_skip") {
+    const session = replyEarnSessions.get(user.id);
+    if (session?.taskId) addEarnSkip(user.id, session.category, session.taskId);
+    await showEarnCategory(ctx, session?.category ?? "all");
+    return true;
+  }
+
+  if (action === "earn_reset") {
+    const category = replyEarnSessions.get(user.id)?.category ?? "all";
+    earnSkips.delete(earnSkipKey(user.id, category));
+    await showEarnCategory(ctx, category);
+    return true;
+  }
+
+  if (action === "task_action") {
+    await handleCurrentReplyTaskAction(ctx, user);
+    return true;
+  }
+
+  if (action === "wallet") {
+    await showScreen(ctx, formatWallet(user.id, user.mode, user.language), walletKeyboard(user));
+    return true;
+  }
+
+  if (action === "deposit") {
+    clearDepositDraft(user.id);
+    await showScreen(ctx, formatDepositMethodScreen(user.id, user.language), taskHtmlExtra(depositMethodKeyboard(user.language)));
+    return true;
+  }
+
+  if (action === "deposit_bkash" || action === "deposit_binance" || action === "deposit_trc20" || action === "deposit_upi") {
+    const method = action === "deposit_bkash"
+      ? "bkash"
+      : action === "deposit_binance"
+        ? "binance_uid"
+        : action === "deposit_trc20"
+          ? "trc20"
+          : "upi";
+    if (method === "upi") {
+      await showScreen(ctx, walletLabels(user.language).upiComingSoon, walletKeyboard(user));
+      return true;
+    }
+    setDepositDraft(user.id, { step: "amount", method });
+    await showScreen(ctx, formatDepositAmountScreen(method, user.language), walletKeyboard(user));
+    return true;
+  }
+
+  if (action === "withdraw_all") {
+    const wallet = walletSummary(store.snapshot(), user.id);
+    if (wallet.withdrawable <= 0) {
+      await showScreen(ctx, walletLabels(user.language).noWithdrawableBalance, walletKeyboard(user));
+      return true;
+    }
+    await beginWithdraw(ctx, user, wallet.withdrawable, "all");
+    return true;
+  }
+
+  if (action === "withdraw_custom") {
+    if (!user.payoutMethod) {
+      await showScreen(ctx, "Save a payout method first. Choose one:", payoutMethodKeyboard("custom", user.language));
+      return true;
+    }
+    customWithdrawWaiters.add(user.id);
+    await showScreen(ctx, formatCustomWithdrawPrompt(user.id, user.language), cancelWithdrawKeyboard(user.language));
+    return true;
+  }
+
+  if (action === "change_payout") {
+    await showScreen(ctx, "Choose payout method:", payoutMethodKeyboard("change", user.language));
+    return true;
+  }
+
+  if (action === "withdraw_history") {
+    await showScreen(ctx, formatWithdrawalHistory(user.id, user.language), walletKeyboard(user));
+    return true;
+  }
+
+  if (action === "profile") {
+    await showScreen(ctx, formatUserProfile(user.id, user.language), mainMenu(user));
+    return true;
+  }
+
+  if (action === "referrals") {
+    await showScreen(ctx, formatReferralStats(user.id, ctx.botInfo?.username, user.language), mainMenu(user));
+    return true;
+  }
+
+  if (action === "jobs") {
+    await showScreen(ctx, userMessages(user.id).earn.myJobsHelp, mainMenu(user));
+    return true;
+  }
+
+  if (action === "post") {
+    if (user.mode !== "buyer") {
+      await showScreen(ctx, getMessages(user.language).common.switchToBuyer, mainMenu(user));
+      return true;
+    }
+    await startTaskWizard(ctx);
+    return true;
+  }
+
+  if (action === "campaigns") {
+    await showBuyerCampaigns(ctx, user);
+    return true;
+  }
+
+  if (action === "submissions") {
+    await showBuyerSubmissions(ctx, user);
+    return true;
+  }
+
+  if (action === "support") {
+    supportWaiters.add(user.id);
+    await showScreen(ctx, getMessages(user.language).support.prompt, mainMenu(user));
+    return true;
+  }
+
+  return false;
+}
+
+function normalizeReplyButtonText(text: string): string {
+  return text.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+async function handleTaskWizardReplyAction(ctx: UserFacingContext, user: UserProfile, draft: TaskDraft, action: ReplyButtonAction): Promise<boolean> {
+  const messages = getMessages(user.language);
+  if (action === "wizard_cancel") {
+    taskDrafts.delete(user.id);
+    await showScreen(ctx, messages.taskWizard.cancelled, mainMenu(user));
+    return true;
+  }
+
+  if (action === "earn_telegram" || action === "earn_website") {
+    draft.category = action === "earn_telegram" ? "telegram" : "website";
+    applyCategoryTemplate(draft, draft.category);
+    taskDrafts.set(user.id, draft);
+    await showScreen(ctx, messages.taskWizard.chooseVerification, mainMenu(user));
+    return true;
+  }
+
+  if (action === "wizard_auto_join" || action === "wizard_timer_visit" || action === "wizard_manual_proof") {
+    if (!draft.category) {
+      await showScreen(ctx, messages.taskWizard.chooseCategory, mainMenu(user));
+      return true;
+    }
+    const method = action === "wizard_auto_join"
+      ? "auto_join"
+      : action === "wizard_timer_visit"
+        ? "timer_visit"
+        : "manual_proof";
+    applyVerificationMethod(draft, method);
+    taskDrafts.set(user.id, draft);
+    if (draft.step === "website_timer") {
+      await showScreen(ctx, messages.taskWizard.websiteTimerPrompt, mainMenu(user));
+      return true;
+    }
+    await showScreen(ctx, targetPromptForDraft(draft, messages), mainMenu(user));
+    return true;
+  }
+
+  if (action === "wizard_timer_30" || action === "wizard_timer_60" || action === "wizard_timer_120") {
+    if (draft.category !== "website") return false;
+    const seconds = action === "wizard_timer_30" ? 30 : action === "wizard_timer_60" ? 60 : 120;
+    draft.websiteVisitSeconds = seconds;
+    draft.step = "target";
+    taskDrafts.set(user.id, draft);
+    await showScreen(ctx, targetPromptForDraft(draft, messages), mainMenu(user));
+    return true;
+  }
+
+  if (action === "wizard_publish") {
+    await publishTaskDraft(ctx, user, draft);
+    return true;
+  }
+
+  return false;
+}
+
+async function publishTaskDraft(ctx: UserFacingContext, user: UserProfile, draft: TaskDraft | undefined) {
+  const messages = getMessages(user.language);
+  if (!draft || !isCompleteDraft(draft)) {
+    await ctx.reply(messages.common.incompleteDraft);
+    return;
+  }
+
+  const task = withTaskTargetMetadata(createTask({
+    id: generateTaskId(store.snapshot()),
+    buyerId: user.id,
+    title: draft.title,
+    category: draft.category,
+    instructions: draft.instructions,
+    rewardPerWorker: draft.rewardPerWorker,
+    workerLimit: draft.workerLimit,
+    approvalType: draft.approvalType,
+    verificationType: draft.verificationType,
+    verificationTarget: draft.verificationTarget,
+    websiteVisitSeconds: draft.websiteVisitSeconds
+  }));
+  try {
+    assertCampaignTargetAllowed(task);
+    assertEnoughWithdrawableForEscrow(user.id, escrowRequired(task), user.language);
+  } catch (error) {
+    await ctx.reply((error as Error).message);
+    return;
+  }
+
+  await store.addTask(task);
+  await store.addTransaction(createTransaction({
+    userId: user.id,
+    type: "escrow_lock",
+    amount: escrowRequired(task),
+    taskId: task.id,
+    note: "MVP records escrow lock. Connect deposit validation before public launch."
+  }));
+  taskDrafts.delete(user.id);
+
+  await ctx.reply(`${messages.taskWizard.published}\n\n${formatTask(task, user.language)}\n\n${messages.wallet.escrowLocked} ${formatMoneyDetail(escrowRequired(task), user.language)}`, taskHtmlExtra(mainMenu(user)));
+}
+
+async function showButtonStyleScreen(ctx: UserFacingContext, user: UserProfile) {
+  const current = user.buttonStyle === "reply" ? "Reply Keyboard" : "Inline Buttons";
+  await showScreen(ctx, [
+    "⌨️ Button Style",
+    "",
+    `Current: ${current}`,
+    "",
+    "Inline keeps chat cleaner. Reply Keyboard keeps controls at the bottom."
+  ].join("\n"), buttonStyleKeyboard(user));
+}
+
+async function setButtonStyle(ctx: UserFacingContext, user: UserProfile, buttonStyle: ButtonStyle) {
+  const updatedUser = { ...user, buttonStyle, updatedAt: new Date().toISOString() };
+  await store.upsertUser(updatedUser);
+  await showScreen(ctx, `Button style set: ${buttonStyle === "reply" ? "Reply Keyboard" : "Inline Buttons"}`, mainMenu(updatedUser));
+  if (buttonStyle === "inline") {
+    await ctx.reply("Reply keyboard hidden.", Markup.removeKeyboard());
+  }
+}
+
+async function setUserLanguage(ctx: UserFacingContext, user: UserProfile, language: "en" | "bn") {
+  const updatedUser = { ...user, language, updatedAt: new Date().toISOString() };
+  await store.upsertUser(updatedUser);
+  const userMessages = getMessages(language).language;
+  await showScreen(ctx, language === "en" ? userMessages.englishSet : userMessages.banglaSet, mainMenu(updatedUser));
+}
+
+async function setUserMode(ctx: UserFacingContext, user: UserProfile, mode: "freelancer" | "buyer") {
+  const updatedUser = switchMode(user, mode);
+  await store.upsertUser(updatedUser);
+  await showScreen(ctx, user.language === "bn" ? `ওয়ার্কস্পেস পরিবর্তন হয়েছে: ${formatMode(mode, user.language)}` : `Workspace changed: ${formatMode(mode, user.language)}`, mainMenu(updatedUser));
+  if (updatedUser.buttonStyle === "reply") {
+    await ctx.reply("Controls updated.", mainMenu(updatedUser));
+  }
+}
+
+async function showBuyerCampaigns(ctx: UserFacingContext, user: UserProfile) {
+  const messages = getMessages(user.language);
+  const tasks = store.snapshot().tasks.filter((task) => task.buyerId === user.id && ["active", "paused"].includes(task.status));
+  if (tasks.length === 0) {
+    await showScreen(ctx, messages.campaigns.none, campaignEmptyKeyboard(user));
+    return;
+  }
+  await showScreen(ctx, formatCampaignList(tasks, user.language), campaignListKeyboard(tasks, user.language));
+}
+
+async function showBuyerSubmissions(ctx: UserFacingContext, user: UserProfile) {
+  const messages = getMessages(user.language);
+  const state = store.snapshot();
+  const taskIds = new Set(state.tasks.filter((task) => task.buyerId === user.id).map((task) => task.id));
+  const submissions = state.submissions.filter((submission) => taskIds.has(submission.taskId));
+  if (submissions.length === 0) {
+    await showScreen(ctx, messages.campaigns.noSubmissions, mainMenu(user));
+    return;
+  }
+  const pending = submissions.filter((submission) => submission.status === "pending");
+  await showScreen(ctx, [
+    messages.campaigns.recentSubmissions,
+    ...submissions.slice(0, 10).map((submission) => `- ${submission.id}: ${submission.status}, worker ${submission.workerId}, ${submission.rewardAmount} BDT`)
+  ].join("\n"), buyerSubmissionKeyboard(pending));
+}
+
+async function handleCurrentReplyTaskAction(ctx: UserFacingContext, user: UserProfile) {
+  const session = replyEarnSessions.get(user.id);
+  if (!session?.taskId) {
+    await showEarn(ctx);
+    return;
+  }
+  const task = store.snapshot().tasks.find((item) => item.id === session.taskId);
+  if (!task) {
+    replyEarnSessions.delete(user.id);
+    await showEarn(ctx);
+    return;
+  }
+  if (task.approvalType === "manual") {
+    await beginProofSubmission(ctx, task.id);
+    return;
+  }
+  await verifyTaskById(ctx, task.id);
+}
+
+async function beginProofSubmission(ctx: UserFacingContext, taskId: string) {
+  await ensureUser(ctx.from);
+  proofWaiters.set(ctx.from.id, taskId);
+  await ctx.reply("Send proof now: screenshot caption, text, username, or link. Your next message will be saved as proof.");
+}
+
+async function verifyTaskById(ctx: UserFacingContext, taskId: string) {
+  await ensureUser(ctx.from);
+  const cooldownKey = `${ctx.from.id}:${taskId}`;
+  const lastVerifyAt = verifyCooldowns.get(cooldownKey) ?? 0;
+  if (Date.now() - lastVerifyAt < VERIFY_COOLDOWN_MS) {
+    await ctx.reply("Please wait. Verify Now has a 15-second cooldown.");
+    return;
+  }
+  verifyCooldowns.set(cooldownKey, Date.now());
+  const task = store.snapshot().tasks.find((item) => item.id === taskId);
+  if (!task) {
+    await ctx.reply("Task not found.");
+    return;
+  }
+
+  if (task.verificationType === "telegram_join") {
+    await verifyTelegramJoin(ctx, task.id);
+    return;
+  }
+
+  if (task.verificationType === "website_visit") {
+    await verifyWebsiteVisit(ctx, task.id);
+    return;
+  }
+
+  if (task.verificationType === "website_final_page") {
+    await verifyGeniFinalPage(ctx, task.id);
+    return;
+  }
+
+  if (task.verificationType === "quiz") {
+    quizWaiters.set(ctx.from.id, task.id);
+    await ctx.reply("Send the quiz answer/code. Correct answers are rewarded instantly.");
+    return;
+  }
+
+  if (task.verificationType === "in_app_code") {
+    codeWaiters.set(ctx.from.id, task.id);
+    await ctx.reply("Send the in-app verification code. Correct codes are rewarded instantly.");
+    return;
+  }
+
+  if (task.verificationType === "website_webhook" || task.verificationType === "app_attribution") {
+    await ctx.reply([
+      "This task is verified by the buyer's API/webhook.",
+      "Complete the required action on the website/app. Neosence will pay automatically when the buyer system confirms it."
+    ].join("\n"));
+    return;
+  }
+
+  await ctx.reply("This auto verification integration is not connected yet. Telegram join, website timer, in-app code, and webhook/API verification are ready now.");
+}
+
 function homeText(user: { mode: "freelancer" | "buyer"; language: "en" | "bn" }) {
   const messages = getMessages(user.language);
   return [
@@ -2544,6 +3013,98 @@ function homeText(user: { mode: "freelancer" | "buyer"; language: "en" | "bn" })
 function homeKeyboard(user: { language: "en" | "bn" }) {
   const messages = getMessages(user.language);
   return Markup.inlineKeyboard([[Markup.button.callback(messages.common.back, "menu:home")]]);
+}
+
+function mainMenu(user: UserProfile): ReplyMarkup {
+  return prefersReplyKeyboard(user) ? replyMainKeyboard(user) : inlineMainMenu(user);
+}
+
+function modeMenu(language?: "en" | "bn", buttonStyle: ButtonStyle = "inline"): ReplyMarkup {
+  if (buttonStyle === "reply") {
+    return replyKeyboard([
+      ["💼 Freelancer", "📣 Buyer"],
+      ["🏠 Home", "⌨️ Button Style"]
+    ]);
+  }
+  return inlineModeMenu(language);
+}
+
+function languageKeyboardFor(user: UserProfile): ReplyMarkup {
+  if (prefersReplyKeyboard(user)) {
+    return replyKeyboard([
+      ["🇺🇸 English", "🇧🇩 Bangla"],
+      ["🏠 Home", "⌨️ Button Style"]
+    ]);
+  }
+  return languageKeyboard(user.language);
+}
+
+function buttonStyleKeyboard(user: UserProfile): ReplyMarkup {
+  if (prefersReplyKeyboard(user)) {
+    return replyKeyboard([
+      ["Inline Buttons", "Reply Keyboard"],
+      ["🏠 Home"]
+    ]);
+  }
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("Inline Buttons", "buttons:inline"), Markup.button.callback("Reply Keyboard", "buttons:reply")],
+    [Markup.button.callback(getMessages(user.language).common.back, "menu:home")]
+  ]);
+}
+
+function replyMainKeyboard(user: { mode: "freelancer" | "buyer"; language: "en" | "bn"; payoutMethod?: unknown }): ReplyMarkup {
+  const rows = user.mode === "buyer"
+    ? [
+      ["➕ Post Task", "💰 Wallet"],
+      ["📢 Telegram", "🌐 Website"],
+      ["Auto Join", "Timer Visit"],
+      ["Manual Proof", "30s", "60s", "120s"],
+      ["Publish Task", "Cancel"],
+      ["💳 Deposit", "📊 Campaigns"],
+      ["bKash", "Binance UID", "TRC20", "UPI"],
+      ["🧾 Submissions", "👤 Profile"],
+      ["🔁 Mode", "🌐 Language"],
+      ["💼 Freelancer", "📣 Buyer"],
+      ["🇺🇸 English", "🇧🇩 Bangla"],
+      ["Inline Buttons", "Reply Keyboard"],
+      ["⌨️ Button Style", "🛟 Support"]
+    ]
+    : [
+      ["💼 Earn", "💰 Wallet"],
+      ["📢 Telegram", "🌐 Website"],
+      ["📋 All Tasks", "📂 Categories"],
+      ["✅ Verify Now", "⏭ Skip"],
+      ["↩️ Show Skipped", "🏠 Home"],
+      ["📌 My Jobs", "🤝 Referrals"],
+      ["🏦 Withdraw All", "✏️ Custom Amount"],
+      [user.payoutMethod ? "🔄 Change Payout" : "🔄 Change Payout", "🧾 Withdrawal History"],
+      ["👤 Profile", "🔁 Mode"],
+      ["🌐 Language", "⌨️ Button Style"],
+      ["💼 Freelancer", "📣 Buyer"],
+      ["🇺🇸 English", "🇧🇩 Bangla"],
+      ["Inline Buttons", "Reply Keyboard"],
+      ["🛟 Support", "🏠 Home"]
+    ];
+  return replyKeyboard(rows);
+}
+
+function replyKeyboard(rows: string[][]): ReplyMarkup {
+  return Markup.keyboard(rows).resize();
+}
+
+function prefersReplyKeyboard(user?: Pick<UserProfile, "buttonStyle">): boolean {
+  return user?.buttonStyle === "reply";
+}
+
+function isReplyKeyboardExtra(extra?: ReplyMarkup): boolean {
+  const replyMarkup = (extra as { reply_markup?: { keyboard?: unknown } } | undefined)?.reply_markup;
+  return Boolean(replyMarkup && "keyboard" in replyMarkup);
+}
+
+function editSafeExtra(extra?: ReplyMarkup): ReplyMarkup | undefined {
+  if (!isReplyKeyboardExtra(extra)) return extra;
+  const { reply_markup: _replyMarkup, ...rest } = extra as Record<string, unknown>;
+  return Object.keys(rest).length > 0 ? rest as ReplyMarkup : undefined;
 }
 
 function walletLabels(language?: "en" | "bn") {
@@ -2650,9 +3211,10 @@ function walletLabels(language?: "en" | "bn") {
   };
 }
 
-function walletKeyboard(user: { mode: "freelancer" | "buyer"; language: "en" | "bn"; payoutMethod?: unknown }) {
+function walletKeyboard(user: { mode: "freelancer" | "buyer"; language: "en" | "bn"; payoutMethod?: unknown; buttonStyle?: ButtonStyle }) {
   const messages = getMessages(user.language);
   const labels = walletLabels(user.language);
+  if (user.buttonStyle === "reply") return replyMainKeyboard(user);
   if (user.mode === "buyer") {
     return Markup.inlineKeyboard([
       [Markup.button.callback(labels.deposit, "deposit:start")],
@@ -2678,7 +3240,8 @@ async function showEarn(ctx: Context & { from: TelegramFrom }) {
     await showScreen(ctx, messages.common.noTasksAvailable, user ? homeKeyboard(user) : undefined);
     return;
   }
-  await showScreen(ctx, messages.earn.chooseCategory, earnCategoryKeyboard(tasks, user?.language));
+  const markup = user?.buttonStyle === "reply" ? replyMainKeyboard(user) : earnCategoryKeyboard(tasks, user?.language);
+  await showScreen(ctx, messages.earn.chooseCategory, markup);
 }
 
 async function showEarnCategory(ctx: Context & { from: TelegramFrom }, category: string) {
@@ -2689,6 +3252,10 @@ async function showEarnCategory(ctx: Context & { from: TelegramFrom }, category:
   const messages = userMessages(ctx.from.id);
   const user = store.snapshot().users.find((item) => item.id === ctx.from.id);
   if (filtered.length === 0) {
+    if (user?.buttonStyle === "reply") {
+      await showScreen(ctx, messages.earn.noCategoryTasks, replyMainKeyboard(user));
+      return;
+    }
     const rows = [
       skipped.size > 0 ? [Markup.button.callback(user?.language === "bn" ? "স্কিপ করা টাস্ক দেখান" : "Show skipped again", `earn:reset:${category}`)] : undefined,
       [Markup.button.callback(messages.earn.backToCategories, "earn:categories")],
@@ -2700,7 +3267,11 @@ async function showEarnCategory(ctx: Context & { from: TelegramFrom }, category:
 
   const task = rankEarnTasks(filtered)[0];
   const text = user ? await formatTaskForUser(ctx, task, user) : formatEarnFeedTask(task, category);
-  await showScreen(ctx, text, taskHtmlExtra(earnFeedKeyboard(task, category, messages, user)));
+  replyEarnSessions.set(ctx.from.id, { category, taskId: task.id, updatedAt: Date.now() });
+  const markup = user?.buttonStyle === "reply"
+    ? replyMainKeyboard(user)
+    : earnFeedKeyboard(task, category, messages, user);
+  await showScreen(ctx, text, taskHtmlExtra(markup));
 }
 
 function formatWallet(userId: number, mode: "freelancer" | "buyer", language?: "en" | "bn"): string {
@@ -3576,15 +4147,7 @@ async function setUserBanStatus(userId: number, isBanned: boolean) {
     updatedAt: new Date().toISOString()
   };
   await store.upsertUser(updatedUser);
-  taskDrafts.delete(userId);
-  proofWaiters.delete(userId);
-  quizWaiters.delete(userId);
-  codeWaiters.delete(userId);
-  payoutSetupWaiters.delete(userId);
-  customWithdrawWaiters.delete(userId);
-  depositDrafts.delete(userId);
-  supportWaiters.delete(userId);
-  geniDrafts.delete(userId);
+  clearUserFlows(userId);
   return updatedUser;
 }
 
@@ -3707,8 +4270,9 @@ async function closeSupportTicket(ticketId: string) {
 
 async function startTaskWizard(ctx: Context & { from: TelegramFrom }) {
   const messages = userMessages(ctx.from.id);
+  const user = store.snapshot().users.find((item) => item.id === ctx.from.id);
   setTaskDraft(ctx.from.id, { step: "task_type" });
-  await showScreen(ctx, messages.taskWizard.chooseCategory, taskCategoryKeyboard(messages));
+  await showScreen(ctx, messages.taskWizard.chooseCategory, user?.buttonStyle === "reply" ? mainMenu(user) : taskCategoryKeyboard(messages));
 }
 
 function taskCategoryKeyboard(messages: MessageBundle = t) {

@@ -1,4 +1,5 @@
 export type UserMode = "freelancer" | "buyer";
+export type ButtonStyle = "inline" | "reply";
 
 export type PayoutMethodType = "upi" | "trc20" | "binance_uid" | "bkash";
 
@@ -44,6 +45,7 @@ export interface UserProfile {
   firstName?: string;
   language: "en" | "bn";
   mode: UserMode;
+  buttonStyle: ButtonStyle;
   payoutMethod?: PayoutMethod;
   isBanned: boolean;
   trustLevel: "new" | "verified" | "trusted" | "pro";
