@@ -8211,32 +8211,45 @@ bot.catch((error) => {
   console.error("Bot error", error);
 });
 
-try {
-  await bot.telegram.getMe();
-  await configureTelegramCommands();
-  if (shouldUseWebhook()) {
-    telegramWebhookCallback = bot.webhookCallback(telegramWebhookPath);
-    await bot.telegram.setWebhook(new URL(telegramWebhookPath, publicBaseUrl()).toString(), {
-      allowed_updates: [...TELEGRAM_ALLOWED_UPDATES]
-    });
-    console.log(`Telegram webhook enabled at ${telegramWebhookPath}`);
-  } else {
-    void bot.launch({ allowedUpdates: [...TELEGRAM_ALLOWED_UPDATES] }).catch((error) => {
-      botRuntime.launchState = "failed";
-      botRuntime.lastError = error instanceof Error ? error.message : String(error);
-      console.error("Bot launch failed", error);
-    });
-  }
-  botRuntime.launchState = "running";
-  botRuntime.lastError = undefined;
-  console.log("Neosence Bot is running");
-} catch (error) {
-  botRuntime.launchState = "failed";
-  botRuntime.lastError = error instanceof Error ? error.message : String(error);
-  console.error("Bot launch failed", error);
-  throw error;
-}
+void startTelegramBot();
 console.log(config.databaseUrl ? "Storage: PostgreSQL" : "Storage: local JSON fallback");
+
+async function startTelegramBot(retryCount = 0): Promise<void> {
+  try {
+    await bot.telegram.getMe();
+    await configureTelegramCommands();
+    if (shouldUseWebhook()) {
+      telegramWebhookCallback = bot.webhookCallback(telegramWebhookPath);
+      await bot.telegram.setWebhook(new URL(telegramWebhookPath, publicBaseUrl()).toString(), {
+        allowed_updates: [...TELEGRAM_ALLOWED_UPDATES]
+      });
+      console.log(`Telegram webhook enabled at ${telegramWebhookPath}`);
+    } else {
+      void bot.launch({ allowedUpdates: [...TELEGRAM_ALLOWED_UPDATES] }).catch((error) => {
+        botRuntime.launchState = "failed";
+        botRuntime.lastError = error instanceof Error ? error.message : String(error);
+        console.error("Bot launch failed", error);
+        scheduleTelegramStartupRetry(retryCount);
+      });
+    }
+    botRuntime.launchState = "running";
+    botRuntime.lastError = undefined;
+    console.log("Neosence Bot is running");
+  } catch (error) {
+    botRuntime.launchState = "failed";
+    botRuntime.lastError = error instanceof Error ? error.message : String(error);
+    console.error("Bot launch failed", error);
+    scheduleTelegramStartupRetry(retryCount);
+  }
+}
+
+function scheduleTelegramStartupRetry(retryCount: number) {
+  const retryDelayMs = Math.min(60000, 5000 * (retryCount + 1));
+  console.log(`Retrying Telegram startup in ${retryDelayMs}ms`);
+  setTimeout(() => {
+    void startTelegramBot(retryCount + 1);
+  }, retryDelayMs);
+}
 
 process.once("SIGINT", () => {
   botRuntime.launchState = "stopped";
