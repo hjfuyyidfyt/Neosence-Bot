@@ -2558,6 +2558,11 @@ function walletLabels(language?: "en" | "bn") {
       pendingDeposit: "ডিপোজিট পেন্ডিং",
       autoHold: "অটো হোল্ড",
       escrowLocked: "এস্ক্রো লক",
+      waiting: "ওয়েটিং",
+      locked: "লকড",
+      taskApproval: "টাস্ক অ্যাপ্রুভাল",
+      campaignLocked: "ক্যাম্পেইন",
+      noPendingOrLocked: "কোনো পেন্ডিং বা লকড ব্যালেন্স নেই।",
       withdrawAll: "সব উইথড্র",
       customAmount: "কাস্টম অ্যামাউন্ট",
       changePayout: "পেআউট পরিবর্তন",
@@ -2604,6 +2609,11 @@ function walletLabels(language?: "en" | "bn") {
     pendingDeposit: "Pending Deposit",
     autoHold: "Auto Hold",
     escrowLocked: "Escrow Locked",
+    waiting: "Waiting",
+    locked: "Locked",
+    taskApproval: "Task approval",
+    campaignLocked: "Campaign",
+    noPendingOrLocked: "No pending or locked balance.",
     withdrawAll: "Withdraw All",
     customAmount: "Custom Amount",
     changePayout: "Change Payout",
@@ -2699,21 +2709,42 @@ function formatWallet(userId: number, mode: "freelancer" | "buyer", language?: "
   const user = store.snapshot().users.find((item) => item.id === userId);
   const wallet = walletSummary(store.snapshot(), userId);
   const payout = user?.payoutMethod ? formatSavedPayout(user.payoutMethod.type, user.payoutMethod.account) : labels.notSet;
-
-  return [
+  const waitingLines = [
+    hasMoney(wallet.pendingDeposit) ? `${labels.deposit}: ${formatMoney(wallet.pendingDeposit, language)}` : undefined,
+    hasMoney(wallet.pendingApproval) ? `${labels.taskApproval}: ${formatMoney(wallet.pendingApproval, language)}` : undefined
+  ].filter((line): line is string => Boolean(line));
+  const lockedLines = [
+    hasMoney(wallet.autoHold) ? `${labels.autoHold}: ${formatMoney(wallet.autoHold, language)}` : undefined,
+    hasMoney(wallet.escrow) ? `${labels.campaignLocked}: ${formatMoney(wallet.escrow, language)}` : undefined
+  ].filter((line): line is string => Boolean(line));
+  const lines = [
     mode === "buyer" ? messages.wallet.buyerTitle : messages.wallet.freelancerTitle,
     "",
-    `${labels.balance}: ${formatMoney(wallet.available, language)}`,
-    `${labels.available}: ${formatMoney(wallet.withdrawable, language)}`,
-    `${labels.pendingDeposit}: ${formatMoney(wallet.pendingDeposit, language)}`,
-    `${labels.pendingApproval}: ${formatMoney(wallet.pendingApproval, language)}`,
-    `${labels.autoHold}: ${formatMoney(wallet.autoHold, language)}`,
-    `${labels.escrowLocked}: ${formatMoney(wallet.escrow, language)}`,
-    "",
-    `${labels.payout}: ${payout}`,
-    "",
-    labels.hint
-  ].join("\n");
+    labels.available,
+    formatMoney(wallet.withdrawable, language)
+  ];
+
+  if (waitingLines.length > 0) {
+    lines.push("", labels.waiting, ...waitingLines);
+  }
+
+  if (lockedLines.length > 0) {
+    lines.push("", labels.locked, ...lockedLines);
+  }
+
+  if (waitingLines.length === 0 && lockedLines.length === 0) {
+    lines.push("", labels.noPendingOrLocked);
+  }
+
+  if (mode === "freelancer" || user?.payoutMethod) {
+    lines.push("", labels.payout, payout);
+  }
+
+  return lines.join("\n");
+}
+
+function hasMoney(value: number): boolean {
+  return Math.abs(roundMoney(value)) > 0;
 }
 
 function assertEnoughWithdrawableForEscrow(userId: number, requiredEscrow: number, language?: "en" | "bn") {
@@ -3446,6 +3477,16 @@ function formatUserProfile(userId: number, language?: "en" | "bn"): string {
   const modeLabel = language === "bn"
     ? (user?.mode === "buyer" ? "বায়ার" : "ফ্রিল্যান্সার")
     : (user?.mode ?? "N/A");
+  const profileWalletLines = [
+    `${walletText.available}: ${formatMoney(wallet.withdrawable, language)}`,
+    hasMoney(wallet.pendingDeposit) ? `${walletText.pendingDeposit}: ${formatMoney(wallet.pendingDeposit, language)}` : undefined,
+    hasMoney(wallet.pendingApproval) ? `${walletText.taskApproval}: ${formatMoney(wallet.pendingApproval, language)}` : undefined,
+    hasMoney(wallet.autoHold) ? `${walletText.autoHold}: ${formatMoney(wallet.autoHold, language)}` : undefined,
+    hasMoney(wallet.escrow) ? `${walletText.campaignLocked}: ${formatMoney(wallet.escrow, language)}` : undefined
+  ].filter((line): line is string => Boolean(line));
+  if (profileWalletLines.length === 1) {
+    profileWalletLines.push(walletText.noPendingOrLocked);
+  }
 
   return [
     messages.profile.title,
@@ -3454,12 +3495,7 @@ function formatUserProfile(userId: number, language?: "en" | "bn"): string {
     `${labels.trust} ${trust.label} ${trust.score}/100`,
     "",
     messages.profile.wallet,
-    `${walletText.balance}: ${formatMoney(wallet.available, language)}`,
-    `${walletText.available}: ${formatMoney(wallet.withdrawable, language)}`,
-    `${walletText.pendingDeposit}: ${formatMoney(wallet.pendingDeposit, language)}`,
-    `${walletText.pendingApproval}: ${formatMoney(wallet.pendingApproval, language)}`,
-    `${walletText.autoHold}: ${formatMoney(wallet.autoHold, language)}`,
-    `${walletText.escrowLocked}: ${formatMoney(wallet.escrow, language)}`,
+    ...profileWalletLines,
     "",
     messages.profile.activity,
     `${labels.approved} ${approved}`,
