@@ -1078,7 +1078,7 @@ bot.action(/^(wallet:deposit_help|deposit:start)$/, async (ctx) => {
   await ctx.answerCbQuery();
   const user = await ensureUser(ctx.from);
   clearDepositDraft(user.id);
-  await showScreen(ctx, formatDepositMethodScreen(user.id, user.language), taskHtmlExtra(depositMethodKeyboard(user.language)));
+  await showScreen(ctx, formatDepositMethodScreen(user.id, user.language), taskHtmlExtra(prefersReplyKeyboard(user) ? replyDepositKeyboard(user) : depositMethodKeyboard(user.language)));
 });
 
 bot.action(/^deposit:method:(bkash|binance_uid|trc20|upi)$/, async (ctx) => {
@@ -1091,7 +1091,7 @@ bot.action(/^deposit:method:(bkash|binance_uid|trc20|upi)$/, async (ctx) => {
 
   await ctx.answerCbQuery();
   setDepositDraft(user.id, { step: "amount", method });
-  await showScreen(ctx, formatDepositAmountScreen(method, user.language), depositAmountKeyboard(method, user.language));
+  await showScreen(ctx, formatDepositAmountScreen(method, user.language), prefersReplyKeyboard(user) ? replyDepositKeyboard(user) : depositAmountKeyboard(method, user.language));
 });
 
 bot.action(/^deposit:preset:(.+)$/, async (ctx) => {
@@ -1099,7 +1099,7 @@ bot.action(/^deposit:preset:(.+)$/, async (ctx) => {
   const user = await ensureUser(ctx.from);
   const draft = getDepositDraft(user.id);
   if (!draft) {
-    await showScreen(ctx, formatDepositMethodScreen(user.id, user.language), taskHtmlExtra(depositMethodKeyboard(user.language)));
+    await showScreen(ctx, formatDepositMethodScreen(user.id, user.language), taskHtmlExtra(prefersReplyKeyboard(user) ? replyDepositKeyboard(user) : depositMethodKeyboard(user.language)));
     return;
   }
   const value = Number(ctx.match[1]);
@@ -1111,11 +1111,11 @@ bot.action("deposit:custom", async (ctx) => {
   const user = await ensureUser(ctx.from);
   const draft = getDepositDraft(user.id);
   if (!draft) {
-    await showScreen(ctx, formatDepositMethodScreen(user.id, user.language), taskHtmlExtra(depositMethodKeyboard(user.language)));
+    await showScreen(ctx, formatDepositMethodScreen(user.id, user.language), taskHtmlExtra(prefersReplyKeyboard(user) ? replyDepositKeyboard(user) : depositMethodKeyboard(user.language)));
     return;
   }
   setDepositDraft(user.id, { ...draft, step: "amount" });
-  await showScreen(ctx, formatDepositAmountScreen(draft.method, user.language), depositAmountKeyboard(draft.method, user.language));
+  await showScreen(ctx, formatDepositAmountScreen(draft.method, user.language), prefersReplyKeyboard(user) ? replyDepositKeyboard(user) : depositAmountKeyboard(draft.method, user.language));
 });
 
 bot.action("deposit:paid", async (ctx) => {
@@ -1123,7 +1123,7 @@ bot.action("deposit:paid", async (ctx) => {
   const user = await ensureUser(ctx.from);
   const draft = getDepositDraft(user.id);
   if (!draft?.amountBdt) {
-    await showScreen(ctx, formatDepositMethodScreen(user.id, user.language), taskHtmlExtra(depositMethodKeyboard(user.language)));
+    await showScreen(ctx, formatDepositMethodScreen(user.id, user.language), taskHtmlExtra(prefersReplyKeyboard(user) ? replyDepositKeyboard(user) : depositMethodKeyboard(user.language)));
     return;
   }
   setDepositDraft(user.id, { ...draft, step: "proof" });
@@ -2500,7 +2500,7 @@ async function showScreen(ctx: Context, text: string, extra?: ReplyMarkup) {
     try {
       await ctx.editMessageText(text, editSafeExtra(extra) as Parameters<Context["editMessageText"]>[1]);
       rememberActiveScreen(ctx);
-      if (isReplyKeyboardExtra(extra)) await ctx.reply("Keyboard updated.", extra);
+      await refreshReplyKeyboard(ctx, extra);
       return;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -2517,6 +2517,7 @@ async function showScreen(ctx: Context, text: string, extra?: ReplyMarkup) {
     if (active) {
       try {
         await ctx.telegram.editMessageText(active.chatId, active.messageId, undefined, text, editSafeExtra(extra) as Parameters<typeof ctx.telegram.editMessageText>[4]);
+        await refreshReplyKeyboard(ctx, extra);
         return;
       } catch {
         activeScreenMessages.delete(ctx.from.id);
@@ -2541,6 +2542,7 @@ async function showFlowScreen(ctx: Context & { from: TelegramFrom }, text: strin
   if (active) {
     try {
       await ctx.telegram.editMessageText(active.chatId, active.messageId, undefined, text, editSafeExtra(extra) as Parameters<typeof ctx.telegram.editMessageText>[4]);
+      await refreshReplyKeyboard(ctx, extra);
       return;
     } catch (error) {
       console.warn("Falling back to reply for flow screen", error instanceof Error ? error.message : String(error));
@@ -2555,6 +2557,22 @@ async function deleteUserInputMessage(ctx: Context) {
     await ctx.deleteMessage();
   } catch {
     // Some chats do not allow deleting user messages; clean screen editing still works.
+  }
+}
+
+async function refreshReplyKeyboard(ctx: Context, extra?: ReplyMarkup) {
+  if (!isReplyKeyboardExtra(extra)) return;
+  try {
+    const sent = await ctx.reply("Controls updated.", extra);
+    if ("message_id" in sent) {
+      try {
+        await ctx.telegram.deleteMessage(sent.chat.id, sent.message_id);
+      } catch {
+        // If Telegram refuses deletion, the short update message is still harmless.
+      }
+    }
+  } catch {
+    // The screen still edits correctly; the old reply keyboard can continue to work.
   }
 }
 
@@ -2578,6 +2596,13 @@ async function handleReplyKeyboardAction(ctx: UserFacingContext & { message: unk
 
   const user = await ensureUser(ctx.from);
   await deleteUserInputMessage(ctx);
+  if (action === "home" || action === "back") {
+    clearUserFlows(user.id);
+    replyEarnSessions.delete(user.id);
+    await showScreen(ctx, homeText(user), mainMenu(user));
+    return true;
+  }
+
   const taskDraft = getTaskDraft(user.id);
   if (taskDraft && await handleTaskWizardReplyAction(ctx, user, taskDraft, action)) return true;
   if (action === "wizard_cancel") {
@@ -2586,12 +2611,11 @@ async function handleReplyKeyboardAction(ctx: UserFacingContext & { message: unk
     return true;
   }
   if (action.startsWith("wizard_")) {
-    await showScreen(ctx, user.mode === "buyer" ? getMessages(user.language).taskWizard.chooseCategory : getMessages(user.language).common.switchToBuyer, mainMenu(user));
-    return true;
-  }
-
-  if (action === "home" || action === "back") {
-    await showScreen(ctx, homeText(user), mainMenu(user));
+    await showScreen(
+      ctx,
+      user.mode === "buyer" ? getMessages(user.language).taskWizard.chooseCategory : getMessages(user.language).common.switchToBuyer,
+      user.mode === "buyer" ? replyPostKeyboard(user) : mainMenu(user)
+    );
     return true;
   }
 
@@ -2668,7 +2692,7 @@ async function handleReplyKeyboardAction(ctx: UserFacingContext & { message: unk
 
   if (action === "deposit") {
     clearDepositDraft(user.id);
-    await showScreen(ctx, formatDepositMethodScreen(user.id, user.language), taskHtmlExtra(depositMethodKeyboard(user.language)));
+    await showScreen(ctx, formatDepositMethodScreen(user.id, user.language), taskHtmlExtra(prefersReplyKeyboard(user) ? replyDepositKeyboard(user) : depositMethodKeyboard(user.language)));
     return true;
   }
 
@@ -2685,7 +2709,7 @@ async function handleReplyKeyboardAction(ctx: UserFacingContext & { message: unk
       return true;
     }
     setDepositDraft(user.id, { step: "amount", method });
-    await showScreen(ctx, formatDepositAmountScreen(method, user.language), walletKeyboard(user));
+    await showScreen(ctx, formatDepositAmountScreen(method, user.language), prefersReplyKeyboard(user) ? replyDepositKeyboard(user) : walletKeyboard(user));
     return true;
   }
 
@@ -2778,13 +2802,13 @@ async function handleTaskWizardReplyAction(ctx: UserFacingContext, user: UserPro
     draft.category = action === "earn_telegram" ? "telegram" : "website";
     applyCategoryTemplate(draft, draft.category);
     taskDrafts.set(user.id, draft);
-    await showScreen(ctx, messages.taskWizard.chooseVerification, mainMenu(user));
+    await showScreen(ctx, messages.taskWizard.chooseVerification, replyPostKeyboard(user, draft));
     return true;
   }
 
   if (action === "wizard_auto_join" || action === "wizard_timer_visit" || action === "wizard_manual_proof") {
     if (!draft.category) {
-      await showScreen(ctx, messages.taskWizard.chooseCategory, mainMenu(user));
+      await showScreen(ctx, messages.taskWizard.chooseCategory, replyPostKeyboard(user, draft));
       return true;
     }
     const method = action === "wizard_auto_join"
@@ -2795,10 +2819,10 @@ async function handleTaskWizardReplyAction(ctx: UserFacingContext, user: UserPro
     applyVerificationMethod(draft, method);
     taskDrafts.set(user.id, draft);
     if (draft.step === "website_timer") {
-      await showScreen(ctx, messages.taskWizard.websiteTimerPrompt, mainMenu(user));
+      await showScreen(ctx, messages.taskWizard.websiteTimerPrompt, replyPostKeyboard(user, draft));
       return true;
     }
-    await showScreen(ctx, targetPromptForDraft(draft, messages), mainMenu(user));
+    await showScreen(ctx, targetPromptForDraft(draft, messages), replyPostKeyboard(user, draft));
     return true;
   }
 
@@ -2808,7 +2832,7 @@ async function handleTaskWizardReplyAction(ctx: UserFacingContext, user: UserPro
     draft.websiteVisitSeconds = seconds;
     draft.step = "target";
     taskDrafts.set(user.id, draft);
-    await showScreen(ctx, targetPromptForDraft(draft, messages), mainMenu(user));
+    await showScreen(ctx, targetPromptForDraft(draft, messages), replyPostKeyboard(user, draft));
     return true;
   }
 
@@ -2892,9 +2916,6 @@ async function setUserMode(ctx: UserFacingContext, user: UserProfile, mode: "fre
   const updatedUser = switchMode(user, mode);
   await store.upsertUser(updatedUser);
   await showScreen(ctx, user.language === "bn" ? `ওয়ার্কস্পেস পরিবর্তন হয়েছে: ${formatMode(mode, user.language)}` : `Workspace changed: ${formatMode(mode, user.language)}`, mainMenu(updatedUser));
-  if (updatedUser.buttonStyle === "reply") {
-    await ctx.reply("Controls updated.", mainMenu(updatedUser));
-  }
 }
 
 async function showBuyerCampaigns(ctx: UserFacingContext, user: UserProfile) {
@@ -3016,7 +3037,7 @@ function homeKeyboard(user: { language: "en" | "bn" }) {
 }
 
 function mainMenu(user: UserProfile): ReplyMarkup {
-  return prefersReplyKeyboard(user) ? replyMainKeyboard(user) : inlineMainMenu(user);
+  return prefersReplyKeyboard(user) ? replyHomeKeyboard(user) : inlineMainMenu(user);
 }
 
 function modeMenu(language?: "en" | "bn", buttonStyle: ButtonStyle = "inline"): ReplyMarkup {
@@ -3052,39 +3073,70 @@ function buttonStyleKeyboard(user: UserProfile): ReplyMarkup {
   ]);
 }
 
-function replyMainKeyboard(user: { mode: "freelancer" | "buyer"; language: "en" | "bn"; payoutMethod?: unknown }): ReplyMarkup {
+function replyHomeKeyboard(user: { mode: "freelancer" | "buyer"; language: "en" | "bn"; payoutMethod?: unknown }): ReplyMarkup {
   const rows = user.mode === "buyer"
     ? [
       ["➕ Post Task", "💰 Wallet"],
-      ["📢 Telegram", "🌐 Website"],
-      ["Auto Join", "Timer Visit"],
-      ["Manual Proof", "30s", "60s", "120s"],
-      ["Publish Task", "Cancel"],
       ["💳 Deposit", "📊 Campaigns"],
-      ["bKash", "Binance UID", "TRC20", "UPI"],
       ["🧾 Submissions", "👤 Profile"],
       ["🔁 Mode", "🌐 Language"],
-      ["💼 Freelancer", "📣 Buyer"],
-      ["🇺🇸 English", "🇧🇩 Bangla"],
-      ["Inline Buttons", "Reply Keyboard"],
       ["⌨️ Button Style", "🛟 Support"]
     ]
     : [
       ["💼 Earn", "💰 Wallet"],
-      ["📢 Telegram", "🌐 Website"],
-      ["📋 All Tasks", "📂 Categories"],
-      ["✅ Verify Now", "⏭ Skip"],
-      ["↩️ Show Skipped", "🏠 Home"],
       ["📌 My Jobs", "🤝 Referrals"],
-      ["🏦 Withdraw All", "✏️ Custom Amount"],
-      [user.payoutMethod ? "🔄 Change Payout" : "🔄 Change Payout", "🧾 Withdrawal History"],
       ["👤 Profile", "🔁 Mode"],
       ["🌐 Language", "⌨️ Button Style"],
-      ["💼 Freelancer", "📣 Buyer"],
-      ["🇺🇸 English", "🇧🇩 Bangla"],
-      ["Inline Buttons", "Reply Keyboard"],
-      ["🛟 Support", "🏠 Home"]
+      ["🛟 Support"]
     ];
+  return replyKeyboard(rows);
+}
+
+function replyEarnKeyboard(): ReplyMarkup {
+  return replyKeyboard([
+    ["📢 Telegram", "🌐 Website"],
+    ["📋 All Tasks", "📂 Categories"],
+    ["✅ Verify Now", "⏭ Skip"],
+    ["↩️ Show Skipped", "🏠 Home"]
+  ]);
+}
+
+function replyWalletKeyboard(user: { mode: "freelancer" | "buyer"; payoutMethod?: unknown }): ReplyMarkup {
+  if (user.mode === "buyer") {
+    return replyKeyboard([
+      ["💳 Deposit", "➕ Post Task"],
+      ["📊 Campaigns", "🧾 Submissions"],
+      ["🏠 Home"]
+    ]);
+  }
+  return replyKeyboard([
+    ["🏦 Withdraw All", "✏️ Custom Amount"],
+    [user.payoutMethod ? "🔄 Change Payout" : "🔄 Change Payout", "🧾 Withdrawal History"],
+    ["🏠 Home"]
+  ]);
+}
+
+function replyDepositKeyboard(_user: { language: "en" | "bn" }): ReplyMarkup {
+  return replyKeyboard([
+    ["bKash", "Binance UID"],
+    ["TRC20", "UPI"],
+    ["💰 Wallet", "🏠 Home"]
+  ]);
+}
+
+function replyPostKeyboard(_user: { language: "en" | "bn" }, draft?: TaskDraft): ReplyMarkup {
+  const rows = [["📢 Telegram", "🌐 Website"]];
+  if (draft?.category === "telegram") {
+    rows.push(["Auto Join", "Manual Proof"]);
+  } else if (draft?.category === "website") {
+    rows.push(["Timer Visit", "Manual Proof"]);
+    rows.push(["30s", "60s", "120s"]);
+  } else {
+    rows.push(["Auto Join", "Timer Visit"]);
+    rows.push(["Manual Proof"]);
+  }
+  rows.push(["Publish Task", "Cancel"]);
+  rows.push(["🏠 Home"]);
   return replyKeyboard(rows);
 }
 
@@ -3214,7 +3266,7 @@ function walletLabels(language?: "en" | "bn") {
 function walletKeyboard(user: { mode: "freelancer" | "buyer"; language: "en" | "bn"; payoutMethod?: unknown; buttonStyle?: ButtonStyle }) {
   const messages = getMessages(user.language);
   const labels = walletLabels(user.language);
-  if (user.buttonStyle === "reply") return replyMainKeyboard(user);
+  if (user.buttonStyle === "reply") return replyWalletKeyboard(user);
   if (user.mode === "buyer") {
     return Markup.inlineKeyboard([
       [Markup.button.callback(labels.deposit, "deposit:start")],
@@ -3237,10 +3289,10 @@ async function showEarn(ctx: Context & { from: TelegramFrom }) {
   const messages = userMessages(userId);
   const tasks = visibleTasks(store.snapshot(), userId);
   if (tasks.length === 0) {
-    await showScreen(ctx, messages.common.noTasksAvailable, user ? homeKeyboard(user) : undefined);
+    await showScreen(ctx, messages.common.noTasksAvailable, user?.buttonStyle === "reply" ? replyEarnKeyboard() : (user ? homeKeyboard(user) : undefined));
     return;
   }
-  const markup = user?.buttonStyle === "reply" ? replyMainKeyboard(user) : earnCategoryKeyboard(tasks, user?.language);
+  const markup = user?.buttonStyle === "reply" ? replyEarnKeyboard() : earnCategoryKeyboard(tasks, user?.language);
   await showScreen(ctx, messages.earn.chooseCategory, markup);
 }
 
@@ -3253,7 +3305,7 @@ async function showEarnCategory(ctx: Context & { from: TelegramFrom }, category:
   const user = store.snapshot().users.find((item) => item.id === ctx.from.id);
   if (filtered.length === 0) {
     if (user?.buttonStyle === "reply") {
-      await showScreen(ctx, messages.earn.noCategoryTasks, replyMainKeyboard(user));
+      await showScreen(ctx, messages.earn.noCategoryTasks, replyEarnKeyboard());
       return;
     }
     const rows = [
@@ -3269,7 +3321,7 @@ async function showEarnCategory(ctx: Context & { from: TelegramFrom }, category:
   const text = user ? await formatTaskForUser(ctx, task, user) : formatEarnFeedTask(task, category);
   replyEarnSessions.set(ctx.from.id, { category, taskId: task.id, updatedAt: Date.now() });
   const markup = user?.buttonStyle === "reply"
-    ? replyMainKeyboard(user)
+    ? replyEarnKeyboard()
     : earnFeedKeyboard(task, category, messages, user);
   await showScreen(ctx, text, taskHtmlExtra(markup));
 }
@@ -4272,7 +4324,7 @@ async function startTaskWizard(ctx: Context & { from: TelegramFrom }) {
   const messages = userMessages(ctx.from.id);
   const user = store.snapshot().users.find((item) => item.id === ctx.from.id);
   setTaskDraft(ctx.from.id, { step: "task_type" });
-  await showScreen(ctx, messages.taskWizard.chooseCategory, user?.buttonStyle === "reply" ? mainMenu(user) : taskCategoryKeyboard(messages));
+  await showScreen(ctx, messages.taskWizard.chooseCategory, user?.buttonStyle === "reply" ? replyPostKeyboard(user) : taskCategoryKeyboard(messages));
 }
 
 function taskCategoryKeyboard(messages: MessageBundle = t) {
