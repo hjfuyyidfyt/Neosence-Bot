@@ -155,6 +155,9 @@ function formatTaskTarget(task: Task, language?: LanguageCode, options: TaskForm
     ? "Telegram"
     : (task.category === "website" ? "Website" : (language === "bn" ? "টার্গেট" : "Target"));
   const icon = categoryIcon(task.category);
+  if (task.category === "website" && options.targetUrl) {
+    return `${icon} ${bold(`${label}:`)} ${htmlLink(options.joinLabel ?? "Open", options.targetUrl)}`;
+  }
   const suffix = options.targetUrl
     ? ` (${htmlLink(options.joinLabel ?? "Join", options.targetUrl)})`
     : "";
