@@ -113,8 +113,11 @@ export interface DepositRequest {
   userId: number;
   amount: number;
   method: string;
+  requestedCurrency?: "BDT" | "USD";
+  requestedAmount?: number;
   proof?: string;
   status: "pending" | "approved" | "rejected";
+  rejectReason?: string;
   createdAt: string;
   reviewedAt?: string;
 }

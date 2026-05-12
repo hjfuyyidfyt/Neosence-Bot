@@ -34,6 +34,21 @@ export function generateTaskId(state: Pick<StoreState, "tasks">): string {
   throw new Error("No 6-digit task IDs are available.");
 }
 
+export function generateDepositId(state: Pick<StoreState, "deposits">): string {
+  const existing = new Set(state.deposits.map((deposit) => deposit.id));
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const candidate = String(Math.floor(100000 + Math.random() * 900000));
+    if (!existing.has(candidate)) return candidate;
+  }
+
+  for (let value = 100000; value <= 999999; value += 1) {
+    const candidate = String(value);
+    if (!existing.has(candidate)) return candidate;
+  }
+
+  throw new Error("No 6-digit deposit IDs are available.");
+}
+
 export function getOrCreateUser(state: StoreState, from: {
   id: number;
   username?: string;
@@ -158,16 +173,21 @@ export function createWithdrawal(userId: number, amount: number, method: string)
 }
 
 export function createDepositRequest(input: {
+  id?: string;
   userId: number;
   amount: number;
   method: string;
+  requestedCurrency?: DepositRequest["requestedCurrency"];
+  requestedAmount?: number;
   proof?: string;
 }): DepositRequest {
   return {
-    id: id("dep"),
+    id: input.id ?? id("dep"),
     userId: input.userId,
     amount: roundMoney(input.amount),
     method: input.method,
+    requestedCurrency: input.requestedCurrency,
+    requestedAmount: input.requestedAmount !== undefined ? roundMoney(input.requestedAmount) : undefined,
     proof: input.proof,
     status: "pending",
     createdAt: now()
@@ -241,6 +261,9 @@ export function walletSummary(state: StoreState, userId: number) {
   const pendingApprovalAmount = state.submissions
     .filter((item) => item.workerId === userId && item.status === "pending")
     .reduce((sum, item) => sum + item.rewardAmount, 0);
+  const pendingDepositAmount = state.deposits
+    .filter((item) => item.userId === userId && item.status === "pending")
+    .reduce((sum, item) => sum + item.amount, 0);
   const autoHold = completed
     .filter((item) => item.type === "earn" && isAutoEarnOnHold(item))
     .reduce((sum, item) => sum + item.amount, 0);
@@ -261,8 +284,9 @@ export function walletSummary(state: StoreState, userId: number) {
 
   return {
     available: roundMoney(available),
-    pending: roundMoney(pendingApprovalAmount + pendingTransactionAmount),
+    pending: roundMoney(pendingApprovalAmount + pendingTransactionAmount + pendingDepositAmount),
     pendingApproval: roundMoney(pendingApprovalAmount),
+    pendingDeposit: roundMoney(pendingDepositAmount),
     pendingTransactions: roundMoney(pendingTransactionAmount),
     autoHold: roundMoney(autoHold),
     withdrawable: roundMoney(Math.max(available - autoHold, 0)),

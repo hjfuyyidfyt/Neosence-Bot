@@ -17,6 +17,7 @@ import {
   escrowRequired,
   calculateTrustLevel,
   calculateTrustScore,
+  generateDepositId,
   generateTaskId,
   getOrCreateUser,
   rejectSubmission,
@@ -73,6 +74,20 @@ const earnSkips = new Map<string, Set<string>>();
 type WithdrawIntent = "all" | "custom" | "change";
 const payoutSetupWaiters = new Map<number, { method: PayoutMethodType; intent: WithdrawIntent; amount?: number }>();
 const customWithdrawWaiters = new Set<number>();
+type DepositMethod = Exclude<PayoutMethodType, "upi">;
+type DepositDraftStep = "amount" | "confirm" | "proof";
+interface DepositDraft {
+  step: DepositDraftStep;
+  method: DepositMethod;
+  depositId?: string;
+  amountBdt?: number;
+  requestedAmount?: number;
+  requestedCurrency?: "BDT" | "USD";
+  createdAt: number;
+  updatedAt: number;
+  expiresAt: number;
+}
+const depositDrafts = new Map<number, DepositDraft>();
 const activeScreenMessages = new Map<number, { chatId: number | string; messageId: number }>();
 type TaskDraftStep =
   | "task_type"
@@ -258,6 +273,7 @@ bot.command("cancel", async (ctx) => {
   codeWaiters.delete(ctx.from.id);
   payoutSetupWaiters.delete(ctx.from.id);
   customWithdrawWaiters.delete(ctx.from.id);
+  depositDrafts.delete(ctx.from.id);
   supportWaiters.delete(ctx.from.id);
   geniDrafts.delete(ctx.from.id);
   await ctx.reply(userMessages(ctx.from.id).common.currentInputCancelled);
@@ -417,9 +433,12 @@ bot.command("depositreq", async (ctx) => {
   }
 
   const deposit = createDepositRequest({
+    id: generateDepositId(store.snapshot()),
     userId: user.id,
     amount,
     method,
+    requestedAmount: amount,
+    requestedCurrency: "BDT",
     proof
   });
   await store.addDeposit(deposit);
@@ -429,7 +448,7 @@ bot.command("depositreq", async (ctx) => {
     amount,
     note: `${method}: ${proof}`
   }));
-  await ctx.reply(`✅ Deposit request submitted\n\nID: ${deposit.id}\nAmount: ${deposit.amount} BDT\nStatus: ${deposit.status}`);
+  await ctx.reply(`✅ Deposit request submitted\n\nID: <code>${escapeHtml(deposit.id)}</code>\nAmount: ${deposit.amount} BDT\nStatus: ${deposit.status}`, taskHtmlExtra());
 });
 
 bot.command("admin", async (ctx) => {
@@ -465,7 +484,7 @@ bot.command("withdrawals", async (ctx) => {
 
 bot.command("deposits", async (ctx) => {
   if (!(await requireAdminConsole(ctx, "finance"))) return;
-  await ctx.reply(formatAdminDepositList(), adminDepositListKeyboard());
+  await ctx.reply(formatAdminDepositList(), taskHtmlExtra(adminDepositListKeyboard()));
 });
 
 bot.command("submissions", async (ctx) => {
@@ -738,6 +757,7 @@ bot.command("approvedeposit", async (ctx) => {
       targetId: deposit.id,
       note: `${deposit.amount} BDT`
     });
+    await notifyDepositUser(deposit, "approved");
     await ctx.reply(`Deposit approved: ${deposit.id}\nUser ${deposit.userId} received ${deposit.amount} BDT.`);
   } catch (error) {
     await ctx.reply((error as Error).message);
@@ -762,6 +782,7 @@ bot.command("rejectdeposit", async (ctx) => {
       targetId: deposit.id,
       note: reason
     });
+    await notifyDepositUser(deposit, "rejected");
     await ctx.reply(`Deposit rejected: ${deposit.id}`);
   } catch (error) {
     await ctx.reply((error as Error).message);
@@ -953,10 +974,67 @@ bot.action("menu:wallet", async (ctx) => {
   await showScreen(ctx, formatWallet(user.id, user.mode, user.language), walletKeyboard(user));
 });
 
-bot.action("wallet:deposit_help", async (ctx) => {
+bot.action(/^(wallet:deposit_help|deposit:start)$/, async (ctx) => {
   await ctx.answerCbQuery();
   const user = await ensureUser(ctx.from);
-  await showScreen(ctx, walletLabels(user.language).depositHelp, walletKeyboard(user));
+  clearDepositDraft(user.id);
+  await showScreen(ctx, formatDepositMethodScreen(user.id, user.language), taskHtmlExtra(depositMethodKeyboard(user.language)));
+});
+
+bot.action(/^deposit:method:(bkash|binance_uid|trc20|upi)$/, async (ctx) => {
+  const user = await ensureUser(ctx.from);
+  const method = ctx.match[1] as PayoutMethodType;
+  if (method === "upi") {
+    await ctx.answerCbQuery(walletLabels(user.language).upiComingSoon, { show_alert: true });
+    return;
+  }
+
+  await ctx.answerCbQuery();
+  setDepositDraft(user.id, { step: "amount", method });
+  await showScreen(ctx, formatDepositAmountScreen(method, user.language), depositAmountKeyboard(method, user.language));
+});
+
+bot.action(/^deposit:preset:(.+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const user = await ensureUser(ctx.from);
+  const draft = getDepositDraft(user.id);
+  if (!draft) {
+    await showScreen(ctx, formatDepositMethodScreen(user.id, user.language), taskHtmlExtra(depositMethodKeyboard(user.language)));
+    return;
+  }
+  const value = Number(ctx.match[1]);
+  await setDepositAmountAndConfirm(ctx, user, draft, value);
+});
+
+bot.action("deposit:custom", async (ctx) => {
+  await ctx.answerCbQuery();
+  const user = await ensureUser(ctx.from);
+  const draft = getDepositDraft(user.id);
+  if (!draft) {
+    await showScreen(ctx, formatDepositMethodScreen(user.id, user.language), taskHtmlExtra(depositMethodKeyboard(user.language)));
+    return;
+  }
+  setDepositDraft(user.id, { ...draft, step: "amount" });
+  await showScreen(ctx, formatDepositAmountScreen(draft.method, user.language), depositAmountKeyboard(draft.method, user.language));
+});
+
+bot.action("deposit:paid", async (ctx) => {
+  await ctx.answerCbQuery();
+  const user = await ensureUser(ctx.from);
+  const draft = getDepositDraft(user.id);
+  if (!draft?.amountBdt) {
+    await showScreen(ctx, formatDepositMethodScreen(user.id, user.language), taskHtmlExtra(depositMethodKeyboard(user.language)));
+    return;
+  }
+  setDepositDraft(user.id, { ...draft, step: "proof" });
+  await showScreen(ctx, formatDepositProofPrompt(draft, user.language), taskHtmlExtra(depositCancelKeyboard(user.language)));
+});
+
+bot.action("deposit:cancel", async (ctx) => {
+  await ctx.answerCbQuery();
+  const user = await ensureUser(ctx.from);
+  clearDepositDraft(user.id);
+  await showScreen(ctx, formatWallet(user.id, user.mode, user.language), walletKeyboard(user));
 });
 
 bot.action("menu:mode", async (ctx) => {
@@ -1178,7 +1256,7 @@ bot.action(/^admin:withdraw:view:(.+)$/, async (ctx) => {
 bot.action("admin:deposits", async (ctx) => {
   if (!(await requireAdminPanelCallback(ctx, "finance"))) return;
   await ctx.answerCbQuery();
-  await showScreen(ctx, formatAdminDepositList(), adminDepositListKeyboard());
+  await showScreen(ctx, formatAdminDepositList(), taskHtmlExtra(adminDepositListKeyboard()));
 });
 
 bot.action("admin:submissions", async (ctx) => {
@@ -1917,7 +1995,8 @@ bot.action(/^deposit:approve:(.+)$/, async (ctx) => {
       targetId: deposit.id,
       note: `${deposit.amount} BDT`
     });
-    await ctx.reply(`Deposit approved. User ${deposit.userId} received ${deposit.amount} BDT.`);
+    await notifyDepositUser(deposit, "approved");
+    await showScreen(ctx, formatAdminDepositList(), taskHtmlExtra(adminDepositListKeyboard()));
   } catch (error) {
     await ctx.reply((error as Error).message);
   }
@@ -1939,7 +2018,8 @@ bot.action(/^deposit:reject:(.+)$/, async (ctx) => {
       targetId: deposit.id,
       note: "Rejected by admin"
     });
-    await ctx.reply(`Deposit rejected: ${deposit.id}`);
+    await notifyDepositUser(deposit, "rejected");
+    await showScreen(ctx, formatAdminDepositList(), taskHtmlExtra(adminDepositListKeyboard()));
   } catch (error) {
     await ctx.reply((error as Error).message);
   }
@@ -2184,6 +2264,12 @@ bot.on("message", async (ctx, next) => {
 
   if (customWithdrawWaiters.has(ctx.from.id)) {
     await handleCustomWithdrawAmount(ctx);
+    return;
+  }
+
+  const depositDraft = getDepositDraft(ctx.from.id);
+  if (depositDraft) {
+    await handleDepositDraftMessage(ctx, depositDraft);
     return;
   }
 
@@ -2469,6 +2555,7 @@ function walletLabels(language?: "en" | "bn") {
       balance: "ব্যালেন্স",
       available: "অ্যাভেইলেবল",
       pendingApproval: "অ্যাপ্রুভাল পেন্ডিং",
+      pendingDeposit: "ডিপোজিট পেন্ডিং",
       autoHold: "অটো হোল্ড",
       escrowLocked: "এস্ক্রো লক",
       withdrawAll: "সব উইথড্র",
@@ -2494,7 +2581,14 @@ function walletLabels(language?: "en" | "bn") {
       amountTooLow: "পেআউট ফি কাটার পর অ্যামাউন্ট খুব কম।",
       withdrawSubmitted: "✅ উইথড্র রিকোয়েস্ট জমা হয়েছে",
       noWithdrawals: "এখনও কোনো উইথড্র নেই।",
-      depositHelp: "ডিপোজিট করতে /depositreq কমান্ড ব্যবহার করুন।\n\nফরম্যাট:\n/depositreq 500 bkash trxid-or-proof-note",
+      depositHelp: "ডিপোজিট মেথড বেছে নিন। bKash হলে BDT, Binance/TRC20 হলে USD।",
+      depositTitle: "💰 ডিপোজিট",
+      chooseDepositMethod: "মেথড বেছে নিন।",
+      depositAmountBdt: "bKash ডিপোজিট অ্যামাউন্ট BDT-তে পাঠান। যেমন: 500",
+      depositAmountUsd: "অ্যামাউন্ট USD-তে পাঠান। যেমন: 5",
+      depositProofPrompt: "পেমেন্ট proof/TxID/screenshot পাঠান।",
+      depositSubmitted: "✅ ডিপোজিট রিকোয়েস্ট জমা হয়েছে",
+      upiComingSoon: "UPI ডিপোজিট শিগগির আসছে।",
       escrowInsufficient: "টাস্ক পাবলিশ করার মতো withdrawable balance নেই। Pending/Auto Hold ব্যালেন্স ব্যবহার করা যাবে না।",
       hint: "অ্যাপ্রুভাল পেন্ডিং/অটো হোল্ড ব্যালেন্স খরচ বা উইথড্র করা যাবে না।"
     };
@@ -2507,6 +2601,7 @@ function walletLabels(language?: "en" | "bn") {
     balance: "Balance",
     available: "Available",
     pendingApproval: "Pending Approval",
+    pendingDeposit: "Pending Deposit",
     autoHold: "Auto Hold",
     escrowLocked: "Escrow Locked",
     withdrawAll: "Withdraw All",
@@ -2532,7 +2627,14 @@ function walletLabels(language?: "en" | "bn") {
     amountTooLow: "Amount is too low after payout fee.",
     withdrawSubmitted: "✅ Withdrawal request submitted",
     noWithdrawals: "No withdrawals yet.",
-    depositHelp: "Use /depositreq to request a deposit.\n\nFormat:\n/depositreq 500 bkash trxid-or-proof-note",
+    depositHelp: "Choose a deposit method. bKash uses BDT, Binance/TRC20 use USD.",
+    depositTitle: "💰 Deposit",
+    chooseDepositMethod: "Choose method.",
+    depositAmountBdt: "Send bKash deposit amount in BDT. Example: 500",
+    depositAmountUsd: "Send amount in USD. Example: 5",
+    depositProofPrompt: "Send payment proof/TxID/screenshot.",
+    depositSubmitted: "✅ Deposit request submitted",
+    upiComingSoon: "UPI deposit is coming soon.",
     escrowInsufficient: "Not enough withdrawable balance to publish this task. Pending/Auto Hold balance cannot be used.",
     hint: "Pending approval/Auto Hold balance cannot be withdrawn or spent."
   };
@@ -2543,7 +2645,7 @@ function walletKeyboard(user: { mode: "freelancer" | "buyer"; language: "en" | "
   const labels = walletLabels(user.language);
   if (user.mode === "buyer") {
     return Markup.inlineKeyboard([
-      [Markup.button.callback(labels.deposit, "wallet:deposit_help")],
+      [Markup.button.callback(labels.deposit, "deposit:start")],
       [Markup.button.callback(labels.postTask, "menu:post"), Markup.button.callback(labels.campaigns, "menu:campaigns")],
       [Markup.button.callback(messages.common.back, "menu:home")]
     ]);
@@ -2603,6 +2705,7 @@ function formatWallet(userId: number, mode: "freelancer" | "buyer", language?: "
     "",
     `${labels.balance}: ${formatMoney(wallet.available, language)}`,
     `${labels.available}: ${formatMoney(wallet.withdrawable, language)}`,
+    `${labels.pendingDeposit}: ${formatMoney(wallet.pendingDeposit, language)}`,
     `${labels.pendingApproval}: ${formatMoney(wallet.pendingApproval, language)}`,
     `${labels.autoHold}: ${formatMoney(wallet.autoHold, language)}`,
     `${labels.escrowLocked}: ${formatMoney(wallet.escrow, language)}`,
@@ -2863,6 +2966,243 @@ function clearEarnSkips(userId: number) {
   }
 }
 
+function setDepositDraft(userId: number, draft: Partial<DepositDraft> & { step: DepositDraftStep; method: DepositMethod }) {
+  const nowTime = Date.now();
+  const existing = depositDrafts.get(userId);
+  depositDrafts.set(userId, {
+    ...existing,
+    ...draft,
+    createdAt: existing?.createdAt ?? nowTime,
+    updatedAt: nowTime,
+    expiresAt: nowTime + DRAFT_TTL_MS
+  });
+}
+
+function getDepositDraft(userId: number): DepositDraft | undefined {
+  const draft = depositDrafts.get(userId);
+  if (!draft) return undefined;
+  if (Date.now() > draft.expiresAt) {
+    depositDrafts.delete(userId);
+    return undefined;
+  }
+  return draft;
+}
+
+function clearDepositDraft(userId: number) {
+  depositDrafts.delete(userId);
+}
+
+function formatDepositMethodScreen(userId: number, language?: "en" | "bn"): string {
+  const labels = walletLabels(language);
+  const wallet = walletSummary(store.snapshot(), userId);
+  return [
+    labels.depositTitle,
+    "",
+    `${labels.balance}: ${formatMoney(wallet.available, language)}`,
+    `${labels.pendingDeposit}: ${formatMoney(wallet.pendingDeposit, language)}`,
+    "",
+    labels.chooseDepositMethod,
+    "",
+    labels.depositHelp
+  ].join("\n");
+}
+
+function depositMethodKeyboard(language?: "en" | "bn") {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("bKash (BDT)", "deposit:method:bkash")],
+    [Markup.button.callback("Binance UID (USD)", "deposit:method:binance_uid"), Markup.button.callback("TRC20 (USDT)", "deposit:method:trc20")],
+    [Markup.button.callback("UPI (Coming soon)", "deposit:method:upi")],
+    [Markup.button.callback(getMessages(language).common.back, "menu:wallet")]
+  ]);
+}
+
+function formatDepositAmountScreen(method: DepositMethod, language?: "en" | "bn"): string {
+  const labels = walletLabels(language);
+  return [
+    labels.depositTitle,
+    "",
+    `${labels.method}: ${payoutMethodLabel(method)}`,
+    "",
+    depositCurrency(method) === "BDT" ? labels.depositAmountBdt : labels.depositAmountUsd
+  ].join("\n");
+}
+
+function depositAmountKeyboard(method: DepositMethod, language?: "en" | "bn") {
+  const presets = depositCurrency(method) === "BDT" ? [500, 1000, 2000, 5000] : [5, 10, 25, 50];
+  return Markup.inlineKeyboard([
+    [Markup.button.callback(`${depositAmountUnit(method)} ${presets[0]}`, `deposit:preset:${presets[0]}`), Markup.button.callback(`${depositAmountUnit(method)} ${presets[1]}`, `deposit:preset:${presets[1]}`)],
+    [Markup.button.callback(`${depositAmountUnit(method)} ${presets[2]}`, `deposit:preset:${presets[2]}`), Markup.button.callback(`${depositAmountUnit(method)} ${presets[3]}`, `deposit:preset:${presets[3]}`)],
+    [Markup.button.callback(walletLabels(language).customAmount, "deposit:custom")],
+    [Markup.button.callback(getMessages(language).common.cancel, "deposit:cancel")]
+  ]);
+}
+
+async function setDepositAmountAndConfirm(ctx: Context, user: UserProfile, draft: DepositDraft, inputAmount: number) {
+  if (!Number.isFinite(inputAmount) || inputAmount <= 0) {
+    await showFlowScreen(ctx as Context & { from: TelegramFrom }, formatDepositAmountScreen(draft.method, user.language), depositAmountKeyboard(draft.method, user.language));
+    return;
+  }
+  const requestedCurrency = depositCurrency(draft.method);
+  const amountBdt = requestedCurrency === "USD" ? roundMoney(inputAmount * config.usdToBdt) : roundMoney(inputAmount);
+  const updatedDraft: DepositDraft = {
+    ...draft,
+    step: "confirm",
+    depositId: draft.depositId ?? nextDepositId(),
+    amountBdt,
+    requestedAmount: roundMoney(inputAmount),
+    requestedCurrency,
+    updatedAt: Date.now(),
+    expiresAt: Date.now() + DRAFT_TTL_MS
+  };
+  depositDrafts.set(user.id, updatedDraft);
+  await showFlowScreen(ctx as Context & { from: TelegramFrom }, formatDepositConfirm(updatedDraft, user.language), taskHtmlExtra(depositPaidKeyboard(user.language)));
+}
+
+function formatDepositConfirm(draft: DepositDraft, language?: "en" | "bn"): string {
+  const labels = walletLabels(language);
+  return [
+    labels.depositTitle,
+    "",
+    `${labels.method}: ${payoutMethodLabel(draft.method)}`,
+    `${labels.amount}: ${formatDepositRequestedAmount(draft)}`,
+    `${labels.balance}: ${formatMoneyDetail(draft.amountBdt ?? 0, language)}`,
+    `Reference: <code>${escapeHtml(draft.depositId ?? "")}</code>`,
+    "",
+    depositPaymentInstruction(draft, language)
+  ].join("\n");
+}
+
+function depositPaymentInstruction(draft: DepositDraft, language?: "en" | "bn"): string {
+  const reference = draft.depositId ?? "";
+  if (language === "bn") {
+    if (draft.method === "bkash") return `bKash payment kore reference <code>${escapeHtml(reference)}</code> use korun. Payment sesh hole I Paid চাপুন।`;
+    if (draft.method === "trc20") return `TRC20 USDT payment kore reference <code>${escapeHtml(reference)}</code> save rakhun. Payment sesh hole I Paid চাপুন।`;
+    return `Binance UID payment kore reference <code>${escapeHtml(reference)}</code> save rakhun. Payment sesh hole I Paid চাপুন।`;
+  }
+  if (draft.method === "bkash") return `Send bKash payment and use reference <code>${escapeHtml(reference)}</code>. After payment, press I Paid.`;
+  if (draft.method === "trc20") return `Send TRC20 USDT and keep reference <code>${escapeHtml(reference)}</code>. After payment, press I Paid.`;
+  return `Send Binance UID payment and keep reference <code>${escapeHtml(reference)}</code>. After payment, press I Paid.`;
+}
+
+function depositPaidKeyboard(language?: "en" | "bn") {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("I Paid", "deposit:paid")],
+    [Markup.button.callback(getMessages(language).common.cancel, "deposit:cancel")]
+  ]);
+}
+
+function depositCancelKeyboard(language?: "en" | "bn") {
+  return Markup.inlineKeyboard([[Markup.button.callback(getMessages(language).common.cancel, "deposit:cancel")]]);
+}
+
+function formatDepositProofPrompt(draft: DepositDraft, language?: "en" | "bn"): string {
+  const labels = walletLabels(language);
+  return [
+    labels.depositTitle,
+    "",
+    `${labels.method}: ${payoutMethodLabel(draft.method)}`,
+    `${labels.amount}: ${formatDepositRequestedAmount(draft)}`,
+    `Reference: <code>${escapeHtml(draft.depositId ?? "")}</code>`,
+    "",
+    labels.depositProofPrompt
+  ].join("\n");
+}
+
+async function handleDepositDraftMessage(ctx: Context & { from: TelegramFrom; message: unknown }, draft: DepositDraft) {
+  const user = await ensureUser(ctx.from);
+  if (Date.now() > draft.expiresAt) {
+    clearDepositDraft(user.id);
+    await deleteUserInputMessage(ctx);
+    await showFlowScreen(ctx, "Deposit draft expired. Start again from Wallet > Deposit.", walletKeyboard(user));
+    return;
+  }
+
+  if (draft.step === "amount") {
+    const text = extractText(ctx.message);
+    await deleteUserInputMessage(ctx);
+    const value = text ? Number(text.replace(/[$,]/g, "").trim()) : Number.NaN;
+    if (!Number.isFinite(value) || value <= 0) {
+      await showFlowScreen(ctx, formatDepositAmountScreen(draft.method, user.language), depositAmountKeyboard(draft.method, user.language));
+      return;
+    }
+    await setDepositAmountAndConfirm(ctx, user, draft, value);
+    return;
+  }
+
+  if (draft.step === "confirm") {
+    await deleteUserInputMessage(ctx);
+    await showFlowScreen(ctx, formatDepositConfirm(draft, user.language), taskHtmlExtra(depositPaidKeyboard(user.language)));
+    return;
+  }
+
+  if (draft.step === "proof") {
+    const proof = extractProof(ctx.message);
+    await deleteUserInputMessage(ctx);
+    await submitDepositRequest(ctx, user, draft, proof);
+  }
+}
+
+async function submitDepositRequest(ctx: Context & { from: TelegramFrom }, user: UserProfile, draft: DepositDraft, proof: string) {
+  const labels = walletLabels(user.language);
+  if (!draft.amountBdt || !draft.requestedAmount || !draft.requestedCurrency || !draft.depositId) {
+    clearDepositDraft(user.id);
+    await showFlowScreen(ctx, "Deposit draft is incomplete. Start again from Wallet > Deposit.", walletKeyboard(user));
+    return;
+  }
+  const deposit = createDepositRequest({
+    id: draft.depositId,
+    userId: user.id,
+    amount: draft.amountBdt,
+    method: formatDepositMethodNote(draft),
+    requestedAmount: draft.requestedAmount,
+    requestedCurrency: draft.requestedCurrency,
+    proof
+  });
+  await store.addDeposit(deposit);
+  await store.addTransaction(createTransaction({
+    userId: user.id,
+    type: "deposit_request",
+    amount: deposit.amount,
+    note: `${deposit.method}: ${proof}`
+  }));
+  clearDepositDraft(user.id);
+  await showFlowScreen(ctx, [
+    labels.depositSubmitted,
+    "",
+    `ID: <code>${escapeHtml(deposit.id)}</code>`,
+    `${labels.method}: ${payoutMethodLabel(draft.method)}`,
+    `${labels.amount}: ${formatDepositRequestedAmount(draft)}`,
+    `${labels.pendingDeposit}: ${formatMoneyDetail(deposit.amount, user.language)}`,
+    "Status: Pending review"
+  ].join("\n"), taskHtmlExtra(walletKeyboard(user)));
+}
+
+function formatDepositMethodNote(draft: DepositDraft): string {
+  return `${payoutMethodLabel(draft.method)} | requested ${formatDepositRequestedAmount(draft)} | ref ${draft.depositId}`;
+}
+
+function formatDepositRequestedAmount(draft: Pick<DepositDraft, "requestedAmount" | "requestedCurrency">): string {
+  if (!draft.requestedAmount || !draft.requestedCurrency) return "N/A";
+  return draft.requestedCurrency === "USD" ? `$${roundMoney(draft.requestedAmount).toFixed(2)}` : `${roundMoney(draft.requestedAmount)} BDT`;
+}
+
+function depositCurrency(method: DepositMethod): "BDT" | "USD" {
+  return method === "bkash" ? "BDT" : "USD";
+}
+
+function depositAmountUnit(method: DepositMethod): string {
+  return depositCurrency(method) === "BDT" ? "BDT" : "$";
+}
+
+function nextDepositId(): string {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const candidate = generateDepositId(store.snapshot());
+    const usedInDraft = [...depositDrafts.values()].some((draft) => draft.depositId === candidate);
+    if (!usedInDraft) return candidate;
+  }
+  return generateDepositId(store.snapshot());
+}
+
 function formatWithdrawHelp(userId: number, language?: "en" | "bn"): string {
   const messages = getMessages(language);
   const wallet = walletSummary(store.snapshot(), userId);
@@ -3116,6 +3456,7 @@ function formatUserProfile(userId: number, language?: "en" | "bn"): string {
     messages.profile.wallet,
     `${walletText.balance}: ${formatMoney(wallet.available, language)}`,
     `${walletText.available}: ${formatMoney(wallet.withdrawable, language)}`,
+    `${walletText.pendingDeposit}: ${formatMoney(wallet.pendingDeposit, language)}`,
     `${walletText.pendingApproval}: ${formatMoney(wallet.pendingApproval, language)}`,
     `${walletText.autoHold}: ${formatMoney(wallet.autoHold, language)}`,
     `${walletText.escrowLocked}: ${formatMoney(wallet.escrow, language)}`,
@@ -3175,6 +3516,7 @@ function formatUserLookup(userId: number): string {
     "Wallet:",
     `Available: ${wallet.available} BDT`,
     `Withdrawable: ${wallet.withdrawable} BDT`,
+    `Pending deposit: ${wallet.pendingDeposit} BDT`,
     `Escrow: ${wallet.escrow} BDT`,
     "",
     `Buyer campaigns: ${buyerTasks.length}`,
@@ -3204,6 +3546,7 @@ async function setUserBanStatus(userId: number, isBanned: boolean) {
   codeWaiters.delete(userId);
   payoutSetupWaiters.delete(userId);
   customWithdrawWaiters.delete(userId);
+  depositDrafts.delete(userId);
   supportWaiters.delete(userId);
   geniDrafts.delete(userId);
   return updatedUser;
@@ -5283,10 +5626,11 @@ function formatAdminDepositList(): string {
     `💰 Pending Deposits (${deposits.length})`,
     "",
     ...deposits.slice(0, 10).map((deposit) => [
-      `${shortId(deposit.id)} • ${formatMoneyDetail(deposit.amount, "en")}`,
+      `<code>${escapeHtml(deposit.id)}</code> • ${formatMoneyDetail(deposit.amount, "en")}`,
       `User: ${deposit.userId}`,
-      `Method: ${deposit.method}`,
-      deposit.proof ? `Proof: ${deposit.proof}` : undefined
+      `Method: ${escapeHtml(deposit.method)}`,
+      deposit.requestedAmount && deposit.requestedCurrency ? `Requested: ${deposit.requestedCurrency === "USD" ? `$${deposit.requestedAmount}` : `${deposit.requestedAmount} BDT`}` : undefined,
+      deposit.proof ? `Proof: ${escapeHtml(deposit.proof)}` : undefined
     ].filter(Boolean).join("\n"))
   ].join("\n\n");
 }
@@ -5661,6 +6005,15 @@ async function notifyWithdrawalUser(withdrawal: Withdrawal, status: "paid" | "re
   await sendTelegramMessageSafe(withdrawal.userId, text);
 }
 
+async function notifyDepositUser(deposit: DepositRequest, status: "approved" | "rejected") {
+  const user = store.snapshot().users.find((item) => item.id === deposit.userId);
+  const amount = formatMoneyDetail(deposit.amount, user?.language);
+  const text = status === "approved"
+    ? `✅ Deposit approved\n\nID: ${deposit.id}\nAmount: ${amount}`
+    : `❌ Deposit rejected\n\nID: ${deposit.id}\nAmount: ${amount}\nReason: ${deposit.rejectReason ?? "Rejected by admin"}`;
+  await sendTelegramMessageSafe(deposit.userId, text);
+}
+
 async function acknowledgeAdminCommand(ctx: Context, text: string) {
   if (config.adminConsoleGroupId && ctx.chat?.id === config.adminConsoleGroupId) return;
   await ctx.reply(text);
@@ -5905,6 +6258,7 @@ async function rejectDepositById(depositId: string, reason: string) {
   const rejectedDeposit: DepositRequest = {
     ...deposit,
     status: "rejected",
+    rejectReason: reason,
     reviewedAt: new Date().toISOString()
   };
   await store.updateDeposit(rejectedDeposit);
