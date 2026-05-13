@@ -250,6 +250,7 @@ type ReplyButtonAction =
   | "earn_reset"
   | "task_action"
   | "deposit"
+  | "deposit_paid"
   | "deposit_bkash"
   | "deposit_binance"
   | "deposit_trc20"
@@ -265,6 +266,7 @@ type ReplyButtonAction =
   | "wizard_timer_60"
   | "wizard_timer_120"
   | "wizard_publish"
+  | "wizard_instruction_skip"
   | "wizard_cancel"
   | "back";
 
@@ -299,6 +301,7 @@ const replyButtonActions: Record<string, ReplyButtonAction> = {
   "✅ verify now": "task_action",
   "📤 submit proof": "task_action",
   "💳 deposit": "deposit",
+  "i paid": "deposit_paid",
   "bkash": "deposit_bkash",
   "binance uid": "deposit_binance",
   "trc20": "deposit_trc20",
@@ -314,6 +317,7 @@ const replyButtonActions: Record<string, ReplyButtonAction> = {
   "60s": "wizard_timer_60",
   "120s": "wizard_timer_120",
   "publish task": "wizard_publish",
+  "use template": "wizard_instruction_skip",
   "cancel": "wizard_cancel"
 };
 
@@ -1096,7 +1100,7 @@ bot.action(/^(wallet:deposit_help|deposit:start)$/, async (ctx) => {
   await ctx.answerCbQuery();
   const user = await ensureUser(ctx.from);
   clearDepositDraft(user.id);
-  await showScreen(ctx, formatDepositMethodScreen(user.id, user.language), taskHtmlExtra(prefersReplyKeyboard(user) ? replyDepositKeyboard(user) : depositMethodKeyboard(user.language)));
+  await showScreen(ctx, formatDepositMethodScreen(user.id, user.language), taskHtmlExtra(prefersReplyKeyboard(user) ? replyDepositMethodKeyboard() : depositMethodKeyboard(user.language)));
 });
 
 bot.action(/^deposit:method:(bkash|binance_uid|trc20|upi)$/, async (ctx) => {
@@ -1109,7 +1113,7 @@ bot.action(/^deposit:method:(bkash|binance_uid|trc20|upi)$/, async (ctx) => {
 
   await ctx.answerCbQuery();
   setDepositDraft(user.id, { step: "amount", method });
-  await showScreen(ctx, formatDepositAmountScreen(method, user.language), prefersReplyKeyboard(user) ? replyDepositKeyboard(user) : depositAmountKeyboard(method, user.language));
+  await showScreen(ctx, formatDepositAmountScreen(method, user.language), prefersReplyKeyboard(user) ? replyDepositAmountKeyboard() : depositAmountKeyboard(method, user.language));
 });
 
 bot.action(/^deposit:preset:(.+)$/, async (ctx) => {
@@ -1117,7 +1121,7 @@ bot.action(/^deposit:preset:(.+)$/, async (ctx) => {
   const user = await ensureUser(ctx.from);
   const draft = getDepositDraft(user.id);
   if (!draft) {
-    await showScreen(ctx, formatDepositMethodScreen(user.id, user.language), taskHtmlExtra(prefersReplyKeyboard(user) ? replyDepositKeyboard(user) : depositMethodKeyboard(user.language)));
+    await showScreen(ctx, formatDepositMethodScreen(user.id, user.language), taskHtmlExtra(prefersReplyKeyboard(user) ? replyDepositMethodKeyboard() : depositMethodKeyboard(user.language)));
     return;
   }
   const value = Number(ctx.match[1]);
@@ -1129,11 +1133,11 @@ bot.action("deposit:custom", async (ctx) => {
   const user = await ensureUser(ctx.from);
   const draft = getDepositDraft(user.id);
   if (!draft) {
-    await showScreen(ctx, formatDepositMethodScreen(user.id, user.language), taskHtmlExtra(prefersReplyKeyboard(user) ? replyDepositKeyboard(user) : depositMethodKeyboard(user.language)));
+    await showScreen(ctx, formatDepositMethodScreen(user.id, user.language), taskHtmlExtra(prefersReplyKeyboard(user) ? replyDepositMethodKeyboard() : depositMethodKeyboard(user.language)));
     return;
   }
   setDepositDraft(user.id, { ...draft, step: "amount" });
-  await showScreen(ctx, formatDepositAmountScreen(draft.method, user.language), prefersReplyKeyboard(user) ? replyDepositKeyboard(user) : depositAmountKeyboard(draft.method, user.language));
+  await showScreen(ctx, formatDepositAmountScreen(draft.method, user.language), prefersReplyKeyboard(user) ? replyDepositAmountKeyboard() : depositAmountKeyboard(draft.method, user.language));
 });
 
 bot.action("deposit:paid", async (ctx) => {
@@ -1141,11 +1145,11 @@ bot.action("deposit:paid", async (ctx) => {
   const user = await ensureUser(ctx.from);
   const draft = getDepositDraft(user.id);
   if (!draft?.amountBdt) {
-    await showScreen(ctx, formatDepositMethodScreen(user.id, user.language), taskHtmlExtra(prefersReplyKeyboard(user) ? replyDepositKeyboard(user) : depositMethodKeyboard(user.language)));
+    await showScreen(ctx, formatDepositMethodScreen(user.id, user.language), taskHtmlExtra(prefersReplyKeyboard(user) ? replyDepositMethodKeyboard() : depositMethodKeyboard(user.language)));
     return;
   }
   setDepositDraft(user.id, { ...draft, step: "proof" });
-  await showScreen(ctx, formatDepositProofPrompt(draft, user.language), taskHtmlExtra(depositCancelKeyboard(user.language)));
+  await showScreen(ctx, formatDepositProofPrompt(draft, user.language), taskHtmlExtra(prefersReplyKeyboard(user) ? replyDepositProofKeyboard() : depositCancelKeyboard(user.language)));
 });
 
 bot.action("deposit:cancel", async (ctx) => {
@@ -1817,7 +1821,7 @@ bot.action(/^wizard:coming_soon:(app|social|survey|data_entry|review|quiz|custom
   const user = await ensureUser(ctx.from);
   const label = categoryLabel(ctx.match[1], user.language);
   await ctx.answerCbQuery(user.language === "bn" ? `${label} শিগগির আসছে` : `${label} is coming soon`);
-  await showScreen(ctx, user.language === "bn" ? `${label} ক্যাটাগরি শিগগির আসছে।` : `${label} category is coming soon.`, taskCategoryKeyboard(getMessages(user.language)));
+  await showScreen(ctx, user.language === "bn" ? `${label} ক্যাটাগরি শিগগির আসছে।` : `${label} category is coming soon.`, prefersReplyKeyboard(user) ? replyPostCategoryKeyboard() : taskCategoryKeyboard(getMessages(user.language)));
 });
 
 bot.action(/^wizard:category:(telegram|website|app|social|survey|data_entry|review|quiz|custom)$/, async (ctx) => {
@@ -1832,13 +1836,15 @@ bot.action(/^wizard:category:(telegram|website|app|social|survey|data_entry|revi
   draft.category = ctx.match[1];
   if (!ACTIVE_TASK_CATEGORIES.has(draft.category)) {
     const label = categoryLabel(draft.category, store.snapshot().users.find((item) => item.id === ctx.from.id)?.language);
-    await showScreen(ctx, `${label} category is coming soon.`, taskCategoryKeyboard(messages));
+    const user = store.snapshot().users.find((item) => item.id === ctx.from.id);
+    await showScreen(ctx, `${label} category is coming soon.`, user?.buttonStyle === "reply" ? replyPostCategoryKeyboard() : taskCategoryKeyboard(messages));
     return;
   }
 
   applyCategoryTemplate(draft, draft.category);
   taskDrafts.set(ctx.from.id, draft);
-  await showScreen(ctx, messages.taskWizard.chooseVerification, verificationMethodKeyboard(draft.category, messages));
+  const user = store.snapshot().users.find((item) => item.id === ctx.from.id);
+  await showScreen(ctx, messages.taskWizard.chooseVerification, user?.buttonStyle === "reply" ? replyPostVerificationKeyboard(draft) : verificationMethodKeyboard(draft.category, messages));
 });
 
 bot.action(/^wizard:website_timer:(30|60|120|custom)$/, async (ctx) => {
@@ -1853,14 +1859,16 @@ bot.action(/^wizard:website_timer:(30|60|120|custom)$/, async (ctx) => {
   if (ctx.match[1] === "custom") {
     draft.step = "website_timer";
     taskDrafts.set(ctx.from.id, draft);
-    await showScreen(ctx, messages.taskWizard.websiteTimerPrompt);
+    const user = store.snapshot().users.find((item) => item.id === ctx.from.id);
+    await showScreen(ctx, messages.taskWizard.websiteTimerPrompt, user?.buttonStyle === "reply" ? replyPostTimerKeyboard() : undefined);
     return;
   }
 
   draft.websiteVisitSeconds = Number(ctx.match[1]);
   draft.step = "target";
   taskDrafts.set(ctx.from.id, draft);
-  await showScreen(ctx, targetPromptForDraft(draft, messages));
+  const user = store.snapshot().users.find((item) => item.id === ctx.from.id);
+  await showScreen(ctx, targetPromptForDraft(draft, messages), user?.buttonStyle === "reply" ? replyPostInputKeyboard() : undefined);
 });
 
 bot.action(/^wizard:method:(auto_join|timer_visit|quiz_answer|manual_proof|webhook|app_tracking|in_app_code)$/, async (ctx) => {
@@ -1876,16 +1884,19 @@ bot.action(/^wizard:method:(auto_join|timer_visit|quiz_answer|manual_proof|webho
   taskDrafts.set(ctx.from.id, draft);
 
   if (draft.verificationType === "website_visit") {
-    await showScreen(ctx, messages.taskWizard.websiteTimerPrompt, websiteTimerKeyboard(messages));
+    const user = store.snapshot().users.find((item) => item.id === ctx.from.id);
+    await showScreen(ctx, messages.taskWizard.websiteTimerPrompt, user?.buttonStyle === "reply" ? replyPostTimerKeyboard() : websiteTimerKeyboard(messages));
     return;
   }
 
   if (draft.verificationType) {
-    await showScreen(ctx, verificationTargetPrompt(draft.verificationType, messages));
+    const user = store.snapshot().users.find((item) => item.id === ctx.from.id);
+    await showScreen(ctx, verificationTargetPrompt(draft.verificationType, messages), user?.buttonStyle === "reply" ? replyPostInputKeyboard() : undefined);
     return;
   }
 
-  await showScreen(ctx, targetPromptForDraft(draft, messages));
+  const user = store.snapshot().users.find((item) => item.id === ctx.from.id);
+  await showScreen(ctx, targetPromptForDraft(draft, messages), user?.buttonStyle === "reply" ? replyPostInputKeyboard() : undefined);
 });
 
 bot.action("wizard:instruction:skip", async (ctx) => {
@@ -1898,7 +1909,8 @@ bot.action("wizard:instruction:skip", async (ctx) => {
   }
   draft.step = "confirm";
   taskDrafts.set(ctx.from.id, draft);
-  await showScreen(ctx, formatDraftReview(draft, messages, store.snapshot().users.find((item) => item.id === ctx.from.id)?.language), confirmTaskKeyboard(messages));
+  const user = store.snapshot().users.find((item) => item.id === ctx.from.id);
+  await showScreen(ctx, formatDraftReview(draft, messages, user?.language), user?.buttonStyle === "reply" ? replyPostConfirmKeyboard() : confirmTaskKeyboard(messages));
 });
 
 bot.action("wizard:instruction:edit", async (ctx) => {
@@ -2632,7 +2644,7 @@ async function handleReplyKeyboardAction(ctx: UserFacingContext & { message: unk
     await showScreen(
       ctx,
       user.mode === "buyer" ? getMessages(user.language).taskWizard.chooseCategory : getMessages(user.language).common.switchToBuyer,
-      user.mode === "buyer" ? replyPostKeyboard(user) : mainMenu(user)
+      user.mode === "buyer" ? replyPostCategoryKeyboard() : mainMenu(user)
     );
     return true;
   }
@@ -2710,7 +2722,18 @@ async function handleReplyKeyboardAction(ctx: UserFacingContext & { message: unk
 
   if (action === "deposit") {
     clearDepositDraft(user.id);
-    await showScreen(ctx, formatDepositMethodScreen(user.id, user.language), taskHtmlExtra(prefersReplyKeyboard(user) ? replyDepositKeyboard(user) : depositMethodKeyboard(user.language)));
+    await showScreen(ctx, formatDepositMethodScreen(user.id, user.language), taskHtmlExtra(prefersReplyKeyboard(user) ? replyDepositMethodKeyboard() : depositMethodKeyboard(user.language)));
+    return true;
+  }
+
+  if (action === "deposit_paid") {
+    const draft = getDepositDraft(user.id);
+    if (!draft?.amountBdt) {
+      await showScreen(ctx, formatDepositMethodScreen(user.id, user.language), taskHtmlExtra(prefersReplyKeyboard(user) ? replyDepositMethodKeyboard() : depositMethodKeyboard(user.language)));
+      return true;
+    }
+    setDepositDraft(user.id, { ...draft, step: "proof" });
+    await showScreen(ctx, formatDepositProofPrompt(draft, user.language), taskHtmlExtra(prefersReplyKeyboard(user) ? replyDepositProofKeyboard() : depositCancelKeyboard(user.language)));
     return true;
   }
 
@@ -2727,7 +2750,7 @@ async function handleReplyKeyboardAction(ctx: UserFacingContext & { message: unk
       return true;
     }
     setDepositDraft(user.id, { step: "amount", method });
-    await showScreen(ctx, formatDepositAmountScreen(method, user.language), prefersReplyKeyboard(user) ? replyDepositKeyboard(user) : walletKeyboard(user));
+    await showScreen(ctx, formatDepositAmountScreen(method, user.language), prefersReplyKeyboard(user) ? replyDepositAmountKeyboard() : walletKeyboard(user));
     return true;
   }
 
@@ -2820,13 +2843,13 @@ async function handleTaskWizardReplyAction(ctx: UserFacingContext, user: UserPro
     draft.category = action === "earn_telegram" ? "telegram" : "website";
     applyCategoryTemplate(draft, draft.category);
     taskDrafts.set(user.id, draft);
-    await showScreen(ctx, messages.taskWizard.chooseVerification, replyPostKeyboard(user, draft));
+    await showScreen(ctx, messages.taskWizard.chooseVerification, replyPostVerificationKeyboard(draft));
     return true;
   }
 
   if (action === "wizard_auto_join" || action === "wizard_timer_visit" || action === "wizard_manual_proof") {
     if (!draft.category) {
-      await showScreen(ctx, messages.taskWizard.chooseCategory, replyPostKeyboard(user, draft));
+      await showScreen(ctx, messages.taskWizard.chooseCategory, replyPostCategoryKeyboard());
       return true;
     }
     const method = action === "wizard_auto_join"
@@ -2837,10 +2860,10 @@ async function handleTaskWizardReplyAction(ctx: UserFacingContext, user: UserPro
     applyVerificationMethod(draft, method);
     taskDrafts.set(user.id, draft);
     if (draft.step === "website_timer") {
-      await showScreen(ctx, messages.taskWizard.websiteTimerPrompt, replyPostKeyboard(user, draft));
+      await showScreen(ctx, messages.taskWizard.websiteTimerPrompt, replyPostTimerKeyboard());
       return true;
     }
-    await showScreen(ctx, targetPromptForDraft(draft, messages), replyPostKeyboard(user, draft));
+    await showScreen(ctx, targetPromptForDraft(draft, messages), replyPostInputKeyboard());
     return true;
   }
 
@@ -2850,7 +2873,14 @@ async function handleTaskWizardReplyAction(ctx: UserFacingContext, user: UserPro
     draft.websiteVisitSeconds = seconds;
     draft.step = "target";
     taskDrafts.set(user.id, draft);
-    await showScreen(ctx, targetPromptForDraft(draft, messages), replyPostKeyboard(user, draft));
+    await showScreen(ctx, targetPromptForDraft(draft, messages), replyPostInputKeyboard());
+    return true;
+  }
+
+  if (action === "wizard_instruction_skip") {
+    draft.step = "confirm";
+    taskDrafts.set(user.id, draft);
+    await showScreen(ctx, formatDraftReview(draft, messages, user.language), replyPostConfirmKeyboard());
     return true;
   }
 
@@ -3110,12 +3140,26 @@ function replyHomeKeyboard(user: { mode: "freelancer" | "buyer"; language: "en" 
   return replyKeyboard(rows);
 }
 
-function replyEarnKeyboard(): ReplyMarkup {
+function replyEarnCategoryKeyboard(): ReplyMarkup {
   return replyKeyboard([
     ["📢 Telegram", "🌐 Website"],
     ["📋 All Tasks", "📂 Categories"],
+    ["🏠 Home"]
+  ]);
+}
+
+function replyEarnTaskKeyboard(): ReplyMarkup {
+  return replyKeyboard([
     ["✅ Verify Now", "⏭ Skip"],
-    ["↩️ Show Skipped", "🏠 Home"]
+    ["📂 Categories", "↩️ Show Skipped"],
+    ["🏠 Home"]
+  ]);
+}
+
+function replyEarnEmptyKeyboard(): ReplyMarkup {
+  return replyKeyboard([
+    ["📂 Categories", "↩️ Show Skipped"],
+    ["🏠 Home"]
   ]);
 }
 
@@ -3134,7 +3178,7 @@ function replyWalletKeyboard(user: { mode: "freelancer" | "buyer"; payoutMethod?
   ]);
 }
 
-function replyDepositKeyboard(_user: { language: "en" | "bn" }): ReplyMarkup {
+function replyDepositMethodKeyboard(): ReplyMarkup {
   return replyKeyboard([
     ["bKash", "Binance UID"],
     ["TRC20", "UPI"],
@@ -3142,22 +3186,74 @@ function replyDepositKeyboard(_user: { language: "en" | "bn" }): ReplyMarkup {
   ]);
 }
 
-function replyPostKeyboard(_user: { language: "en" | "bn" }, draft?: TaskDraft): ReplyMarkup {
-  const rows = [["📢 Telegram", "🌐 Website"]];
+function replyDepositAmountKeyboard(): ReplyMarkup {
+  return replyKeyboard([
+    ["Cancel"],
+    ["💰 Wallet", "🏠 Home"]
+  ]);
+}
+
+function replyDepositConfirmKeyboard(): ReplyMarkup {
+  return replyKeyboard([
+    ["I Paid", "Cancel"],
+    ["💰 Wallet", "🏠 Home"]
+  ]);
+}
+
+function replyPostCategoryKeyboard(): ReplyMarkup {
+  return replyKeyboard([
+    ["📢 Telegram", "🌐 Website"],
+    ["Cancel", "🏠 Home"]
+  ]);
+}
+
+function replyPostVerificationKeyboard(draft?: TaskDraft): ReplyMarkup {
+  const rows: string[][] = [];
   if (draft?.category === "telegram") {
     rows.push(["Auto Join", "Manual Proof"]);
   } else if (draft?.category === "website") {
     rows.push(["Timer Visit", "Manual Proof"]);
-    rows.push(["30s", "60s", "120s"]);
   } else {
     rows.push(["Auto Join", "Timer Visit"]);
     rows.push(["Manual Proof"]);
   }
-  rows.push(["Publish Task", "Cancel"]);
-  rows.push(["🏠 Home"]);
+  rows.push(["Cancel", "🏠 Home"]);
   return replyKeyboard(rows);
 }
 
+function replyPostTimerKeyboard(): ReplyMarkup {
+  return replyKeyboard([
+    ["30s", "60s", "120s"],
+    ["Cancel", "🏠 Home"]
+  ]);
+}
+
+function replyPostInputKeyboard(): ReplyMarkup {
+  return replyKeyboard([
+    ["Cancel", "🏠 Home"]
+  ]);
+}
+
+function replyPostConfirmKeyboard(): ReplyMarkup {
+  return replyKeyboard([
+    ["Publish Task", "Cancel"],
+    ["🏠 Home"]
+  ]);
+}
+
+function replyPostInstructionKeyboard(): ReplyMarkup {
+  return replyKeyboard([
+    ["Use Template", "Cancel"],
+    ["🏠 Home"]
+  ]);
+}
+
+function replyDepositProofKeyboard(): ReplyMarkup {
+  return replyKeyboard([
+    ["Cancel"],
+    ["💰 Wallet", "🏠 Home"]
+  ]);
+}
 function replyKeyboard(rows: string[][]): ReplyMarkup {
   return Markup.keyboard(rows).resize();
 }
@@ -3307,10 +3403,10 @@ async function showEarn(ctx: Context & { from: TelegramFrom }) {
   const messages = userMessages(userId);
   const tasks = visibleTasks(store.snapshot(), userId);
   if (tasks.length === 0) {
-    await showScreen(ctx, messages.common.noTasksAvailable, user?.buttonStyle === "reply" ? replyEarnKeyboard() : (user ? homeKeyboard(user) : undefined));
+    await showScreen(ctx, messages.common.noTasksAvailable, user?.buttonStyle === "reply" ? replyEarnEmptyKeyboard() : (user ? homeKeyboard(user) : undefined));
     return;
   }
-  const markup = user?.buttonStyle === "reply" ? replyEarnKeyboard() : earnCategoryKeyboard(tasks, user?.language);
+  const markup = user?.buttonStyle === "reply" ? replyEarnCategoryKeyboard() : earnCategoryKeyboard(tasks, user?.language);
   await showScreen(ctx, messages.earn.chooseCategory, markup);
 }
 
@@ -3323,7 +3419,7 @@ async function showEarnCategory(ctx: Context & { from: TelegramFrom }, category:
   const user = store.snapshot().users.find((item) => item.id === ctx.from.id);
   if (filtered.length === 0) {
     if (user?.buttonStyle === "reply") {
-      await showScreen(ctx, messages.earn.noCategoryTasks, replyEarnKeyboard());
+      await showScreen(ctx, messages.earn.noCategoryTasks, replyEarnEmptyKeyboard());
       return;
     }
     const rows = [
@@ -3339,7 +3435,7 @@ async function showEarnCategory(ctx: Context & { from: TelegramFrom }, category:
   const text = user ? await formatTaskForUser(ctx, task, user) : formatEarnFeedTask(task, category);
   replyEarnSessions.set(ctx.from.id, { category, taskId: task.id, updatedAt: Date.now() });
   const markup = user?.buttonStyle === "reply"
-    ? replyEarnKeyboard()
+    ? replyEarnTaskKeyboard()
     : earnFeedKeyboard(task, category, messages, user);
   await showScreen(ctx, text, taskHtmlExtra(markup));
 }
@@ -3727,7 +3823,7 @@ async function setDepositAmountAndConfirm(ctx: Context, user: UserProfile, draft
     expiresAt: Date.now() + DRAFT_TTL_MS
   };
   depositDrafts.set(user.id, updatedDraft);
-  await showFlowScreen(ctx as Context & { from: TelegramFrom }, formatDepositConfirm(updatedDraft, user.language), taskHtmlExtra(depositPaidKeyboard(user.language)));
+  await showFlowScreen(ctx as Context & { from: TelegramFrom }, formatDepositConfirm(updatedDraft, user.language), taskHtmlExtra(prefersReplyKeyboard(user) ? replyDepositConfirmKeyboard() : depositPaidKeyboard(user.language)));
 }
 
 function formatDepositConfirm(draft: DepositDraft, language?: "en" | "bn"): string {
@@ -3794,7 +3890,7 @@ async function handleDepositDraftMessage(ctx: Context & { from: TelegramFrom; me
     await deleteUserInputMessage(ctx);
     const value = text ? Number(text.replace(/[$,]/g, "").trim()) : Number.NaN;
     if (!Number.isFinite(value) || value <= 0) {
-      await showFlowScreen(ctx, formatDepositAmountScreen(draft.method, user.language), depositAmountKeyboard(draft.method, user.language));
+      await showFlowScreen(ctx, formatDepositAmountScreen(draft.method, user.language), prefersReplyKeyboard(user) ? replyDepositAmountKeyboard() : depositAmountKeyboard(draft.method, user.language));
       return;
     }
     await setDepositAmountAndConfirm(ctx, user, draft, value);
@@ -3803,7 +3899,7 @@ async function handleDepositDraftMessage(ctx: Context & { from: TelegramFrom; me
 
   if (draft.step === "confirm") {
     await deleteUserInputMessage(ctx);
-    await showFlowScreen(ctx, formatDepositConfirm(draft, user.language), taskHtmlExtra(depositPaidKeyboard(user.language)));
+    await showFlowScreen(ctx, formatDepositConfirm(draft, user.language), taskHtmlExtra(prefersReplyKeyboard(user) ? replyDepositConfirmKeyboard() : depositPaidKeyboard(user.language)));
     return;
   }
 
@@ -4342,7 +4438,7 @@ async function startTaskWizard(ctx: Context & { from: TelegramFrom }) {
   const messages = userMessages(ctx.from.id);
   const user = store.snapshot().users.find((item) => item.id === ctx.from.id);
   setTaskDraft(ctx.from.id, { step: "task_type" });
-  await showScreen(ctx, messages.taskWizard.chooseCategory, user?.buttonStyle === "reply" ? replyPostKeyboard(user) : taskCategoryKeyboard(messages));
+  await showScreen(ctx, messages.taskWizard.chooseCategory, user?.buttonStyle === "reply" ? replyPostCategoryKeyboard() : taskCategoryKeyboard(messages));
 }
 
 function taskCategoryKeyboard(messages: MessageBundle = t) {
@@ -4948,7 +5044,8 @@ async function handleTaskWizardMessage(ctx: Context & { from: TelegramFrom; mess
     if (draft.instructions) {
       draft.step = "instructions";
       taskDrafts.set(ctx.from.id, draft);
-      await ctx.reply(instructionPrompt(draft, messages), instructionTemplateKeyboard(messages));
+      const user = store.snapshot().users.find((item) => item.id === ctx.from.id);
+      await ctx.reply(instructionPrompt(draft, messages), user?.buttonStyle === "reply" ? replyPostInstructionKeyboard() : instructionTemplateKeyboard(messages));
       return;
     }
 
@@ -4966,7 +5063,8 @@ async function handleTaskWizardMessage(ctx: Context & { from: TelegramFrom; mess
     if (draft.approvalType === "auto" && !draft.verificationType) {
       draft.step = "verification";
       taskDrafts.set(ctx.from.id, draft);
-      await ctx.reply(messages.taskWizard.autoVerificationType, Markup.inlineKeyboard([
+      const user = store.snapshot().users.find((item) => item.id === ctx.from.id);
+      await ctx.reply(messages.taskWizard.autoVerificationType, user?.buttonStyle === "reply" ? replyPostVerificationKeyboard(draft) : Markup.inlineKeyboard([
         [Markup.button.callback(messages.verificationMethods.telegramJoin, "wizard:verification:telegram_join")],
         [Markup.button.callback(messages.verificationMethods.websiteVisit, "wizard:verification:website_visit")],
         [Markup.button.callback(messages.verificationMethods.websiteWebhook, "wizard:verification:website_webhook")],
@@ -4994,7 +5092,8 @@ async function handleTaskWizardMessage(ctx: Context & { from: TelegramFrom; mess
 
     draft.step = "confirm";
     taskDrafts.set(ctx.from.id, draft);
-    await ctx.reply(formatDraftReview(draft, messages, store.snapshot().users.find((item) => item.id === ctx.from.id)?.language), confirmTaskKeyboard(messages));
+    const user = store.snapshot().users.find((item) => item.id === ctx.from.id);
+    await ctx.reply(formatDraftReview(draft, messages, user?.language), user?.buttonStyle === "reply" ? replyPostConfirmKeyboard() : confirmTaskKeyboard(messages));
     return;
   }
 
@@ -5034,7 +5133,8 @@ async function handleTaskWizardMessage(ctx: Context & { from: TelegramFrom; mess
     if (draft.verificationType === "website_visit" && !draft.websiteVisitSeconds) {
       draft.step = "website_timer";
       taskDrafts.set(ctx.from.id, draft);
-      await ctx.reply(messages.taskWizard.websiteTimerPrompt, websiteTimerKeyboard(messages));
+      const user = store.snapshot().users.find((item) => item.id === ctx.from.id);
+      await ctx.reply(messages.taskWizard.websiteTimerPrompt, user?.buttonStyle === "reply" ? replyPostTimerKeyboard() : websiteTimerKeyboard(messages));
       return;
     }
 
@@ -5098,7 +5198,7 @@ async function promptNextCommercialStep(ctx: Context & { from: TelegramFrom }, d
 
   draft.step = "instructions";
   taskDrafts.set(ctx.from.id, draft);
-  await ctx.reply(instructionPrompt(draft, messages), instructionTemplateKeyboard(messages));
+  await ctx.reply(instructionPrompt(draft, messages), user?.buttonStyle === "reply" ? replyPostInstructionKeyboard() : instructionTemplateKeyboard(messages));
 }
 
 function formatDraftReview(draft: TaskDraft, messages: MessageBundle = t, language?: "en" | "bn"): string {
