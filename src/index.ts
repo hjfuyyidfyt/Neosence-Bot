@@ -2637,7 +2637,6 @@ async function handleReplyKeyboardAction(ctx: UserFacingContext & { message: unk
   if (!action) return false;
 
   const user = await ensureUser(ctx.from);
-  await deleteUserInputMessage(ctx);
   if (action === "home" || action === "back") {
     clearUserFlows(user.id);
     replyEarnSessions.delete(user.id);
