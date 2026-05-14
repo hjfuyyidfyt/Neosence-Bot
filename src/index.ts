@@ -235,6 +235,7 @@ type ReplyButtonAction =
   | "mode"
   | "language"
   | "support"
+  | "settings"
   | "button_style"
   | "style_inline"
   | "style_reply"
@@ -289,6 +290,8 @@ const replyButtonActions: Record<string, ReplyButtonAction> = {
   "🔁 mode": "mode",
   "🌐 language": "language",
   "🛟 support": "support",
+  "⚙️ settings": "settings",
+  "settings": "settings",
   "⌨️ button style": "button_style",
   "inline buttons": "style_inline",
   "reply keyboard": "style_reply",
@@ -378,7 +381,7 @@ bot.command("mode", async (ctx) => {
 
 bot.command("language", async (ctx) => {
   const user = await ensureUser(ctx.from);
-  await ctx.reply(formatLanguageStatus(user.language), languageKeyboardFor(user));
+  await ctx.reply(languageComingSoonText(), settingsKeyboard(user));
 });
 
 bot.command("buttons", async (ctx) => {
@@ -1091,6 +1094,18 @@ bot.action(/^buttons:(inline|reply)$/, async (ctx) => {
   await setButtonStyle(ctx, user, ctx.match[1] as ButtonStyle);
 });
 
+bot.action("menu:settings", async (ctx) => {
+  await ctx.answerCbQuery();
+  const user = await ensureUser(ctx.from);
+  await showSettingsScreen(ctx, user);
+});
+
+bot.action("menu:buttons", async (ctx) => {
+  await ctx.answerCbQuery();
+  const user = await ensureUser(ctx.from);
+  await showButtonStyleScreen(ctx, user);
+});
+
 bot.action("menu:post", async (ctx) => {
   await ctx.answerCbQuery();
   const user = await ensureUser(ctx.from);
@@ -1181,21 +1196,7 @@ bot.action("menu:mode", async (ctx) => {
 bot.action(/^language:(en|bn)$/, async (ctx) => {
   await ctx.answerCbQuery();
   const user = await ensureUser(ctx.from);
-  const language = ctx.match[1] as "en" | "bn";
-  const updatedUser = {
-    ...user,
-    language,
-    updatedAt: new Date().toISOString()
-  };
-  await store.upsertUser(updatedUser);
-  const userMessages = getMessages(language).language;
-  await showScreen(
-    ctx,
-    language === "en"
-      ? userMessages.englishSet
-      : userMessages.banglaSet,
-    mainMenu(updatedUser)
-  );
+  await showScreen(ctx, languageComingSoonText(), settingsKeyboard(user));
 });
 
 bot.action("menu:jobs", async (ctx) => {
@@ -1332,7 +1333,7 @@ bot.action("menu:profile", async (ctx) => {
 bot.action("menu:language", async (ctx) => {
   await ctx.answerCbQuery();
   const user = await ensureUser(ctx.from);
-  await showScreen(ctx, formatLanguageStatus(user.language), languageKeyboardFor(user));
+  await showScreen(ctx, languageComingSoonText(), settingsKeyboard(user));
 });
 
 bot.action("menu:support", async (ctx) => {
@@ -2391,8 +2392,11 @@ interface TelegramFrom {
 
 async function ensureUser(from: TelegramFrom) {
   const user = getOrCreateUser(store.snapshot(), from);
-  await store.upsertUser(user);
-  return user;
+  const normalizedUser = user.language === "en"
+    ? user
+    : { ...user, language: "en" as const, updatedAt: new Date().toISOString() };
+  await store.upsertUser(normalizedUser);
+  return normalizedUser;
 }
 
 function userMessages(userId: number) {
@@ -2665,18 +2669,23 @@ async function handleReplyKeyboardAction(ctx: UserFacingContext & { message: unk
     return true;
   }
 
+  if (action === "settings") {
+    await showSettingsScreen(ctx, user);
+    return true;
+  }
+
   if (action === "style_inline" || action === "style_reply") {
     await setButtonStyle(ctx, user, action === "style_reply" ? "reply" : "inline");
     return true;
   }
 
   if (action === "language") {
-    await showScreen(ctx, formatLanguageStatus(user.language), languageKeyboardFor(user));
+    await showScreen(ctx, languageComingSoonText(), settingsKeyboard(user));
     return true;
   }
 
   if (action === "language_en" || action === "language_bn") {
-    await setUserLanguage(ctx, user, action === "language_bn" ? "bn" : "en");
+    await showScreen(ctx, languageComingSoonText(), settingsKeyboard(user));
     return true;
   }
 
@@ -2976,20 +2985,39 @@ async function showButtonStyleScreen(ctx: UserFacingContext, user: UserProfile) 
   ].join("\n"), buttonStyleKeyboard(user));
 }
 
+async function showSettingsScreen(ctx: UserFacingContext, user: UserProfile) {
+  const current = user.buttonStyle === "reply" ? "Reply Keyboard" : "Inline Buttons";
+  await showScreen(ctx, [
+    "⚙️ Settings",
+    "",
+    `Button style: ${current}`,
+    "Language: English",
+    "",
+    "Language selection is coming soon."
+  ].join("\n"), settingsKeyboard(user));
+}
+
+function languageComingSoonText() {
+  return [
+    "🌐 Language",
+    "",
+    "Language settings are coming soon.",
+    "Neosence is currently available in English for everyone."
+  ].join("\n");
+}
+
 async function setButtonStyle(ctx: UserFacingContext, user: UserProfile, buttonStyle: ButtonStyle) {
   const updatedUser = { ...user, buttonStyle, updatedAt: new Date().toISOString() };
   await store.upsertUser(updatedUser);
-  await showScreen(ctx, `Button style set: ${buttonStyle === "reply" ? "Reply Keyboard" : "Inline Buttons"}`, mainMenu(updatedUser));
+  await showScreen(ctx, `Button style set: ${buttonStyle === "reply" ? "Reply Keyboard" : "Inline Buttons"}`, settingsKeyboard(updatedUser));
   if (buttonStyle === "inline") {
     await ctx.reply("Reply keyboard hidden.", Markup.removeKeyboard());
   }
 }
 
 async function setUserLanguage(ctx: UserFacingContext, user: UserProfile, language: "en" | "bn") {
-  const updatedUser = { ...user, language, updatedAt: new Date().toISOString() };
-  await store.upsertUser(updatedUser);
-  const userMessages = getMessages(language).language;
-  await showScreen(ctx, language === "en" ? userMessages.englishSet : userMessages.banglaSet, mainMenu(updatedUser));
+  void language;
+  await showScreen(ctx, languageComingSoonText(), settingsKeyboard(user));
 }
 
 async function setUserMode(ctx: UserFacingContext, user: UserProfile, mode: "freelancer" | "buyer") {
@@ -3124,7 +3152,7 @@ function modeMenu(language?: "en" | "bn", buttonStyle: ButtonStyle = "inline"): 
   if (buttonStyle === "reply") {
     return replyKeyboard([
       ["💼 Freelancer", "📣 Buyer"],
-      ["🏠 Home", "⌨️ Button Style"]
+      ["⚙️ Settings", "🏠 Home"]
     ]);
   }
   return inlineModeMenu(language);
@@ -3144,11 +3172,24 @@ function buttonStyleKeyboard(user: UserProfile): ReplyMarkup {
   if (prefersReplyKeyboard(user)) {
     return replyKeyboard([
       ["Inline Buttons", "Reply Keyboard"],
-      ["🏠 Home"]
+      ["⚙️ Settings", "🏠 Home"]
     ]);
   }
   return Markup.inlineKeyboard([
     [Markup.button.callback("Inline Buttons", "buttons:inline"), Markup.button.callback("Reply Keyboard", "buttons:reply")],
+    [Markup.button.callback("⚙️ Settings", "menu:settings"), Markup.button.callback(getMessages(user.language).common.back, "menu:home")]
+  ]);
+}
+
+function settingsKeyboard(user: UserProfile): ReplyMarkup {
+  if (prefersReplyKeyboard(user)) {
+    return replyKeyboard([
+      ["⌨️ Button Style", "🌐 Language"],
+      ["🏠 Home"]
+    ]);
+  }
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("⌨️ Button Style", "menu:buttons"), Markup.button.callback("🌐 Language", "menu:language")],
     [Markup.button.callback(getMessages(user.language).common.back, "menu:home")]
   ]);
 }
@@ -3159,15 +3200,14 @@ function replyHomeKeyboard(user: { mode: "freelancer" | "buyer"; language: "en" 
       ["➕ Post Task", "💰 Wallet"],
       ["💳 Deposit", "📊 Campaigns"],
       ["🧾 Submissions", "👤 Profile"],
-      ["🔁 Mode", "🌐 Language"],
-      ["⌨️ Button Style", "🛟 Support"]
+      ["🔁 Mode", "⚙️ Settings"],
+      ["🛟 Support"]
     ]
     : [
       ["💼 Earn", "💰 Wallet"],
       ["📌 My Jobs", "🤝 Referrals"],
       ["👤 Profile", "🔁 Mode"],
-      ["🌐 Language", "⌨️ Button Style"],
-      ["🛟 Support"]
+      ["⚙️ Settings", "🛟 Support"]
     ];
   return replyKeyboard(rows);
 }

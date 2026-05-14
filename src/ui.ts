@@ -17,7 +17,7 @@ export function mainMenu(user: UserProfile) {
       [Markup.button.callback(t.menu.postTask, "menu:post")],
       [Markup.button.callback(t.menu.campaigns, "menu:campaigns"), Markup.button.callback(t.menu.submissions, "menu:submissions")],
       [Markup.button.callback(t.menu.balance, "menu:wallet"), Markup.button.callback(t.menu.buyerMode, "mode:freelancer")],
-      [Markup.button.callback(t.menu.profile, "menu:profile"), Markup.button.callback(t.menu.language, "menu:language")],
+      [Markup.button.callback(t.menu.profile, "menu:profile"), Markup.button.callback("⚙️ Settings", "menu:settings")],
       [Markup.button.callback(t.menu.support, "menu:support")]
     ]);
   }
@@ -26,7 +26,7 @@ export function mainMenu(user: UserProfile) {
     [Markup.button.callback(t.menu.earnMoney, "menu:earn")],
     [Markup.button.callback(t.menu.myJobs, "menu:jobs"), Markup.button.callback(t.menu.wallet, "menu:wallet")],
     [Markup.button.callback(t.menu.referrals, "menu:referrals"), Markup.button.callback(t.menu.profile, "menu:profile")],
-    [Markup.button.callback(t.menu.freelancerMode, "mode:buyer"), Markup.button.callback(t.menu.language, "menu:language")],
+    [Markup.button.callback(t.menu.freelancerMode, "mode:buyer"), Markup.button.callback("⚙️ Settings", "menu:settings")],
     [Markup.button.callback(t.menu.support, "menu:support")]
   ]);
 }
