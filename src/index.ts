@@ -128,7 +128,7 @@ interface TaskDraft {
 }
 
 const taskDrafts = new Map<number, TaskDraft>();
-type GeniDraftStep = "name" | "reward" | "workers" | "shortener" | "profit_cpm" | "profit_cost" | "profit_visits" | "profit_rate";
+type GeniDraftStep = "name" | "reward" | "workers" | "shortener" | "auto_batch" | "profit_cpm" | "profit_cost" | "profit_visits" | "profit_rate";
 
 interface GeniDraft {
   step: GeniDraftStep;
@@ -1512,6 +1512,13 @@ bot.action("geni:new", async (ctx) => {
     "Example:",
     "Complete shortlink visit"
   ].join("\n"), geniCancelKeyboard());
+});
+
+bot.action("geni:auto", async (ctx) => {
+  if (!(await requireAdminPanelCallback(ctx, "geni"))) return;
+  await ctx.answerCbQuery();
+  setGeniDraft(ctx.from.id, { step: "auto_batch" });
+  await showScreen(ctx, formatGeniAutoPostPrompt(), geniCancelKeyboard());
 });
 
 bot.action("geni:links", async (ctx) => {
@@ -5494,6 +5501,34 @@ async function handleGeniDraftMessage(ctx: Context & { from: TelegramFrom; messa
     return;
   }
 
+  if (draft.step === "auto_batch") {
+    const user = await ensureUser(ctx.from);
+    const input = parseGeniAutoPostInput(text);
+    if (!input) {
+      await showFlowScreen(ctx, formatGeniAutoPostPrompt("Invalid input. Send: count minReward maxReward workers"), geniCancelKeyboard());
+      return;
+    }
+
+    const minRewardBdt = roundMoney(input.minRewardUsd * config.usdToBdt);
+    const maxRewardBdt = roundMoney(input.maxRewardUsd * config.usdToBdt);
+    try {
+      assertMinimumReward("website", minRewardBdt, user.language);
+      assertMinimumReward("website", maxRewardBdt, user.language);
+    } catch (error) {
+      await showFlowScreen(ctx, (error as Error).message, geniCancelKeyboard());
+      return;
+    }
+
+    try {
+      const result = await autoPublishGeniWebsiteTasks(ctx, input);
+      geniDrafts.delete(ctx.from.id);
+      await showFlowScreen(ctx, formatGeniAutoPostResult(result, user.language), geniSimpleKeyboard());
+    } catch (error) {
+      await showFlowScreen(ctx, (error as Error).message, geniCancelKeyboard());
+    }
+    return;
+  }
+
   if (draft.step === "profit_cpm") {
     const value = parsePositiveNumber(text, { allowZero: true });
     if (value === undefined) {
@@ -5580,7 +5615,20 @@ async function handleGeniDraftMessage(ctx: Context & { from: TelegramFrom; messa
   }
 }
 
-async function publishGeniWebsiteTask(ctx: Context & { from: TelegramFrom }, link: GeniLink, shortenerUrl: string): Promise<GeniLink> {
+interface GeniAutoPostInput {
+  count: number;
+  minRewardUsd: number;
+  maxRewardUsd: number;
+  workerLimit: number;
+}
+
+interface GeniAutoPostResult {
+  created: GeniLink[];
+  failed: Array<{ name: string; reason: string }>;
+  escrowLocked: number;
+}
+
+async function publishGeniWebsiteTask(ctx: Context & { from: TelegramFrom }, link: GeniLink, shortenerUrl: string, instructions = config.geniDefaultInstructions): Promise<GeniLink> {
   const user = await ensureUser(ctx.from);
   const now = new Date().toISOString();
 
@@ -5617,7 +5665,7 @@ async function publishGeniWebsiteTask(ctx: Context & { from: TelegramFrom }, lin
     buyerId: user.id,
     title: link.name,
     category: "website",
-    instructions: "Open the link, complete all shortener steps, and wait until the final page loads.",
+    instructions,
     rewardPerWorker,
     workerLimit,
     approvalType: "auto",
@@ -5652,6 +5700,98 @@ async function publishGeniWebsiteTask(ctx: Context & { from: TelegramFrom }, lin
     note: `${link.name} ${formatMoneyDetail(escrowRequired(task), user.language)} escrow`
   });
   return updated;
+}
+
+async function autoPublishGeniWebsiteTasks(ctx: Context & { from: TelegramFrom }, input: GeniAutoPostInput): Promise<GeniAutoPostResult> {
+  if (!config.shrinkmeApiToken) {
+    throw new Error("ShrinkMe API token missing. Add SHRINKME_API_TOKEN from ShrinkMe Tools > Developers API in Railway env.");
+  }
+
+  const user = await ensureUser(ctx.from);
+  const created: GeniLink[] = [];
+  const failed: Array<{ name: string; reason: string }> = [];
+  let escrowLocked = 0;
+
+  for (let index = 1; index <= input.count; index += 1) {
+    const now = new Date().toISOString();
+    const rewardUsd = randomBetween(input.minRewardUsd, input.maxRewardUsd);
+    const rewardPerWorker = roundMoney(rewardUsd * config.usdToBdt);
+    const name = autoGeniTaskName(index, input.count);
+    const link: GeniLink = {
+      id: compactId("gl"),
+      name,
+      adminId: ctx.from.id,
+      status: "active",
+      rewardPerWorker,
+      workerLimit: input.workerLimit,
+      createdAt: now,
+      updatedAt: now
+    };
+
+    try {
+      await store.upsertGeniLink(link);
+      const shortenerUrl = await createShrinkMeShortUrl(geniFinalUrl(link.id));
+      const updated = await publishGeniWebsiteTask(ctx, link, shortenerUrl, config.geniDefaultInstructions);
+      const task = store.snapshot().tasks.find((item) => item.id === updated.taskId);
+      if (task) escrowLocked = roundMoney(escrowLocked + escrowRequired(task));
+      created.push(updated);
+    } catch (error) {
+      failed.push({ name, reason: (error as Error).message });
+      await store.upsertGeniLink({ ...link, status: "archived", updatedAt: new Date().toISOString() });
+    }
+  }
+
+  await addAdminAudit({
+    adminId: ctx.from.id,
+    action: "geni_auto_post",
+    targetType: "geni",
+    note: `Created ${created.length}/${input.count}, workers ${input.workerLimit}, reward $${input.minRewardUsd}-${input.maxRewardUsd}`
+  });
+
+  if (created.length === 0 && failed.length > 0) {
+    throw new Error(`Auto Post failed. First error: ${failed[0]?.reason ?? "Unknown error"}`);
+  }
+
+  return { created, failed, escrowLocked };
+}
+
+async function createShrinkMeShortUrl(destinationUrl: string): Promise<string> {
+  const apiUrl = new URL("https://shrinkme.io/api");
+  apiUrl.searchParams.set("api", config.shrinkmeApiToken ?? "");
+  apiUrl.searchParams.set("url", destinationUrl);
+  const response = await fetch(apiUrl);
+  const body = await response.json().catch(() => undefined) as { status?: string; shortenedUrl?: string; message?: string; error?: string } | undefined;
+  if (!response.ok || !body || body.status !== "success" || !body.shortenedUrl) {
+    throw new Error(body?.message ?? body?.error ?? `ShrinkMe API failed with HTTP ${response.status}`);
+  }
+  assertHttpUrl(body.shortenedUrl);
+  return body.shortenedUrl;
+}
+
+function parseGeniAutoPostInput(text: string): GeniAutoPostInput | undefined {
+  const values = text.replace(/[$,]/g, " ").split(/\s+/).filter(Boolean).map(Number);
+  if (values.length < 4 || values.some((value) => !Number.isFinite(value))) return undefined;
+  const [countRaw, minRewardUsd, maxRewardUsd, workerRaw] = values;
+  const count = Math.round(countRaw);
+  const workerLimit = Math.round(workerRaw);
+  if (count < 1 || count > 50) return undefined;
+  if (workerLimit < 1 || workerLimit > 100000) return undefined;
+  if (minRewardUsd <= 0 || maxRewardUsd < minRewardUsd) return undefined;
+  return {
+    count,
+    minRewardUsd: roundTo(minRewardUsd, 4),
+    maxRewardUsd: roundTo(maxRewardUsd, 4),
+    workerLimit
+  };
+}
+
+function randomBetween(min: number, max: number): number {
+  return min + Math.random() * (max - min);
+}
+
+function autoGeniTaskName(index: number, total: number): string {
+  const suffix = total > 1 ? ` #${String(index).padStart(2, "0")}` : "";
+  return `${config.geniDefaultTitle}${suffix}`.slice(0, 80);
 }
 
 function assertHttpUrl(value: string) {
@@ -5841,7 +5981,8 @@ function formatGeniSimpleHome(): string {
 
 function geniSimpleKeyboard() {
   return Markup.inlineKeyboard([
-    [Markup.button.callback("➕ Post Website Task", "geni:new"), Markup.button.callback("📊 Real Results", "geni:results")],
+    [Markup.button.callback("➕ Post Website Task", "geni:new"), Markup.button.callback("🤖 Auto Post", "geni:auto")],
+    [Markup.button.callback("📊 Real Results", "geni:results")],
     [Markup.button.callback("💹 Profit Calculator", "geni:profit"), Markup.button.callback("⏸ Stop Task", "geni:stop")],
     [Markup.button.callback("🛡 Safety", "geni:safety"), Markup.button.callback("⚙️ Advanced", "geni:advanced")],
     [Markup.button.callback("⬅️ Admin Panel", "admin:dashboard")]
@@ -5874,12 +6015,56 @@ function formatGeniAdvancedDashboard(): string {
 
 function geniAdvancedKeyboard() {
   return Markup.inlineKeyboard([
-    [Markup.button.callback("➕ New Website Task", "geni:new"), Markup.button.callback("📋 Tasks", "geni:links")],
+    [Markup.button.callback("➕ New Website Task", "geni:new"), Markup.button.callback("🤖 Auto Post", "geni:auto")],
+    [Markup.button.callback("📋 Tasks", "geni:links")],
     [Markup.button.callback("📊 Analytics", "geni:analytics"), Markup.button.callback("💹 Calculator", "geni:profit")],
     [Markup.button.callback("🛡 Fraud", "geni:fraud"), Markup.button.callback("🧾 Logs", "geni:logs")],
     [Markup.button.callback("🧹 Clear Test Data", "geni:clear")],
     [Markup.button.callback("⬅️ Simple", "geni:dashboard"), Markup.button.callback("Admin Panel", "admin:dashboard")]
   ]);
+}
+
+function formatGeniAutoPostPrompt(error?: string): string {
+  return [
+    "🤖 GENI Auto Post",
+    "",
+    error,
+    error ? "" : undefined,
+    "Send one line:",
+    "count minReward maxReward workers",
+    "",
+    "Example:",
+    "10 0.034 0.06 100",
+    "",
+    `Default title: ${config.geniDefaultTitle}`,
+    `Default instruction: ${config.geniDefaultInstructions}`,
+    "",
+    "ShrinkMe API token must be set in Railway env as SHRINKME_API_TOKEN.",
+    "Manual Post Website Task will stay available."
+  ].filter((line): line is string => line !== undefined).join("\n");
+}
+
+function formatGeniAutoPostResult(result: GeniAutoPostResult, language?: "en" | "bn"): string {
+  const firstTasks = result.created
+    .slice(0, 8)
+    .map((link) => `- ${link.name}: ${link.taskId ?? "task pending"}`)
+    .join("\n");
+  const failedText = result.failed.length > 0
+    ? [
+      "",
+      `Failed: ${result.failed.length}`,
+      ...result.failed.slice(0, 5).map((item) => `- ${item.name}: ${item.reason}`)
+    ].join("\n")
+    : "";
+  return [
+    "🤖 Auto Post Complete",
+    "",
+    `Created: ${result.created.length}`,
+    `Escrow locked: ${formatMoneyDetail(result.escrowLocked, language)}`,
+    "",
+    firstTasks || "No task created.",
+    failedText
+  ].join("\n");
 }
 
 function geniClearConfirmKeyboard() {

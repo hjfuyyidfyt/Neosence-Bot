@@ -19,6 +19,9 @@ const envSchema = z.object({
   REFERRAL_BONUS_BDT: z.coerce.number().min(0).default(1),
   USD_TO_BDT: z.coerce.number().min(1).default(120),
   WEBHOOK_SECRET: z.string().optional(),
+  SHRINKME_API_TOKEN: z.string().optional(),
+  GENI_DEFAULT_TITLE: z.string().default("Website task"),
+  GENI_DEFAULT_INSTRUCTIONS: z.string().default("Open the link, complete all shortener steps, and wait until the final page loads."),
   PORT: z.coerce.number().default(3000)
 });
 
@@ -39,6 +42,9 @@ export const config = {
   referralBonusBdt: env.REFERRAL_BONUS_BDT,
   usdToBdt: env.USD_TO_BDT,
   webhookSecret: env.WEBHOOK_SECRET,
+  shrinkmeApiToken: env.SHRINKME_API_TOKEN,
+  geniDefaultTitle: env.GENI_DEFAULT_TITLE,
+  geniDefaultInstructions: env.GENI_DEFAULT_INSTRUCTIONS,
   port: env.PORT
 };
 
