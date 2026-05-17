@@ -35,6 +35,8 @@ const defaultGeniSettings = (): GeniSettings => ({
   sameDeviceLimit: 8,
   blockBotUserAgents: true,
   flagDirectFinalHits: true,
+  defaultTitle: "Website task",
+  defaultInstructions: "Open the link, complete all shortener steps, and wait until the final page loads.",
   updatedAt: new Date(0).toISOString()
 });
 

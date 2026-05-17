@@ -278,6 +278,8 @@ export interface GeniSettings {
   sameDeviceLimit: number;
   blockBotUserAgents: boolean;
   flagDirectFinalHits: boolean;
+  defaultTitle: string;
+  defaultInstructions: string;
   updatedAt: string;
 }
 

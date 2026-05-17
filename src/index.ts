@@ -128,7 +128,7 @@ interface TaskDraft {
 }
 
 const taskDrafts = new Map<number, TaskDraft>();
-type GeniDraftStep = "name" | "reward" | "workers" | "shortener" | "auto_batch" | "profit_cpm" | "profit_cost" | "profit_visits" | "profit_rate";
+type GeniDraftStep = "name" | "reward" | "workers" | "shortener" | "auto_batch" | "auto_title" | "auto_instructions" | "profit_cpm" | "profit_cost" | "profit_visits" | "profit_rate";
 
 interface GeniDraft {
   step: GeniDraftStep;
@@ -1519,6 +1519,26 @@ bot.action("geni:auto", async (ctx) => {
   await ctx.answerCbQuery();
   setGeniDraft(ctx.from.id, { step: "auto_batch" });
   await showScreen(ctx, formatGeniAutoPostPrompt(), geniCancelKeyboard());
+});
+
+bot.action("geni:auto_settings", async (ctx) => {
+  if (!(await requireAdminPanelCallback(ctx, "geni"))) return;
+  await ctx.answerCbQuery();
+  await showScreen(ctx, formatGeniAutoSettings(), geniAutoSettingsKeyboard());
+});
+
+bot.action("geni:auto_title", async (ctx) => {
+  if (!(await requireAdminPanelCallback(ctx, "geni"))) return;
+  await ctx.answerCbQuery();
+  setGeniDraft(ctx.from.id, { step: "auto_title" });
+  await showScreen(ctx, "Send the default Auto Post title.\n\nExample:\nWebsite task", geniAutoSettingsKeyboard());
+});
+
+bot.action("geni:auto_instructions", async (ctx) => {
+  if (!(await requireAdminPanelCallback(ctx, "geni"))) return;
+  await ctx.answerCbQuery();
+  setGeniDraft(ctx.from.id, { step: "auto_instructions" });
+  await showScreen(ctx, "Send the default Auto Post instructions.", geniAutoSettingsKeyboard());
 });
 
 bot.action("geni:links", async (ctx) => {
@@ -5529,6 +5549,44 @@ async function handleGeniDraftMessage(ctx: Context & { from: TelegramFrom; messa
     return;
   }
 
+  if (draft.step === "auto_title") {
+    const title = text.slice(0, 80).trim();
+    if (!title) {
+      await showFlowScreen(ctx, "Send a valid title.", geniAutoSettingsKeyboard());
+      return;
+    }
+    const settings = geniSettings();
+    await store.updateGeniSettings({ ...settings, defaultTitle: title, updatedAt: new Date().toISOString() });
+    await addAdminAudit({
+      adminId: ctx.from.id,
+      action: "geni_auto_title",
+      targetType: "geni",
+      note: title
+    });
+    geniDrafts.delete(ctx.from.id);
+    await showFlowScreen(ctx, formatGeniAutoSettings("Default title updated."), geniAutoSettingsKeyboard());
+    return;
+  }
+
+  if (draft.step === "auto_instructions") {
+    const instructions = text.slice(0, 1000).trim();
+    if (!instructions) {
+      await showFlowScreen(ctx, "Send valid instructions.", geniAutoSettingsKeyboard());
+      return;
+    }
+    const settings = geniSettings();
+    await store.updateGeniSettings({ ...settings, defaultInstructions: instructions, updatedAt: new Date().toISOString() });
+    await addAdminAudit({
+      adminId: ctx.from.id,
+      action: "geni_auto_instructions",
+      targetType: "geni",
+      note: instructions.slice(0, 120)
+    });
+    geniDrafts.delete(ctx.from.id);
+    await showFlowScreen(ctx, formatGeniAutoSettings("Default instructions updated."), geniAutoSettingsKeyboard());
+    return;
+  }
+
   if (draft.step === "profit_cpm") {
     const value = parsePositiveNumber(text, { allowZero: true });
     if (value === undefined) {
@@ -5628,7 +5686,7 @@ interface GeniAutoPostResult {
   escrowLocked: number;
 }
 
-async function publishGeniWebsiteTask(ctx: Context & { from: TelegramFrom }, link: GeniLink, shortenerUrl: string, instructions = config.geniDefaultInstructions): Promise<GeniLink> {
+async function publishGeniWebsiteTask(ctx: Context & { from: TelegramFrom }, link: GeniLink, shortenerUrl: string, instructions = geniDefaultInstructions()): Promise<GeniLink> {
   const user = await ensureUser(ctx.from);
   const now = new Date().toISOString();
 
@@ -5731,7 +5789,7 @@ async function autoPublishGeniWebsiteTasks(ctx: Context & { from: TelegramFrom }
     try {
       await store.upsertGeniLink(link);
       const shortenerUrl = await createShrinkMeShortUrl(geniFinalUrl(link.id));
-      const updated = await publishGeniWebsiteTask(ctx, link, shortenerUrl, config.geniDefaultInstructions);
+      const updated = await publishGeniWebsiteTask(ctx, link, shortenerUrl, geniDefaultInstructions());
       const task = store.snapshot().tasks.find((item) => item.id === updated.taskId);
       if (task) escrowLocked = roundMoney(escrowLocked + escrowRequired(task));
       created.push(updated);
@@ -5791,7 +5849,7 @@ function randomBetween(min: number, max: number): number {
 
 function autoGeniTaskName(index: number, total: number): string {
   const suffix = total > 1 ? ` #${String(index).padStart(2, "0")}` : "";
-  return `${config.geniDefaultTitle}${suffix}`.slice(0, 80);
+  return `${geniDefaultTitle()}${suffix}`.slice(0, 80);
 }
 
 function assertHttpUrl(value: string) {
@@ -5804,7 +5862,8 @@ function assertHttpUrl(value: string) {
 }
 
 function geniSettings(): GeniSettings {
-  return store.snapshot().geniSettings ?? {
+  const stored = store.snapshot().geniSettings;
+  const defaults: GeniSettings = {
     profitCpmUsd: 2,
     trafficCostPerVisitUsd: 0,
     plannedVisits: 1000,
@@ -5813,8 +5872,19 @@ function geniSettings(): GeniSettings {
     sameDeviceLimit: 8,
     blockBotUserAgents: true,
     flagDirectFinalHits: true,
+    defaultTitle: config.geniDefaultTitle,
+    defaultInstructions: config.geniDefaultInstructions,
     updatedAt: new Date(0).toISOString()
   };
+  return { ...defaults, ...(stored ?? {}) };
+}
+
+function geniDefaultTitle(): string {
+  return geniSettings().defaultTitle || config.geniDefaultTitle || "Website task";
+}
+
+function geniDefaultInstructions(): string {
+  return geniSettings().defaultInstructions || config.geniDefaultInstructions || "Open the link, complete all shortener steps, and wait until the final page loads.";
 }
 
 function parseGeniProfitInput(text: string): Pick<GeniSettings, "profitCpmUsd" | "trafficCostPerVisitUsd" | "plannedVisits" | "expectedCompletionRate"> | undefined {
@@ -6019,6 +6089,7 @@ function geniAdvancedKeyboard() {
     [Markup.button.callback("📋 Tasks", "geni:links")],
     [Markup.button.callback("📊 Analytics", "geni:analytics"), Markup.button.callback("💹 Calculator", "geni:profit")],
     [Markup.button.callback("🛡 Fraud", "geni:fraud"), Markup.button.callback("🧾 Logs", "geni:logs")],
+    [Markup.button.callback("⚙️ Auto Post Settings", "geni:auto_settings")],
     [Markup.button.callback("🧹 Clear Test Data", "geni:clear")],
     [Markup.button.callback("⬅️ Simple", "geni:dashboard"), Markup.button.callback("Admin Panel", "admin:dashboard")]
   ]);
@@ -6036,12 +6107,34 @@ function formatGeniAutoPostPrompt(error?: string): string {
     "Example:",
     "10 0.034 0.06 100",
     "",
-    `Default title: ${config.geniDefaultTitle}`,
-    `Default instruction: ${config.geniDefaultInstructions}`,
+    `Default title: ${geniDefaultTitle()}`,
+    `Default instruction: ${geniDefaultInstructions()}`,
     "",
     "ShrinkMe API token must be set in Railway env as SHRINKME_API_TOKEN.",
     "Manual Post Website Task will stay available."
   ].filter((line): line is string => line !== undefined).join("\n");
+}
+
+function formatGeniAutoSettings(message?: string): string {
+  return [
+    "⚙️ GENI Auto Post Settings",
+    "",
+    message,
+    message ? "" : undefined,
+    `Default title: ${geniDefaultTitle()}`,
+    "",
+    "Default instructions:",
+    geniDefaultInstructions(),
+    "",
+    "These are managed from bot settings. Env values are only fallback defaults."
+  ].filter((line): line is string => line !== undefined).join("\n");
+}
+
+function geniAutoSettingsKeyboard() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("✏️ Title", "geni:auto_title"), Markup.button.callback("📝 Instructions", "geni:auto_instructions")],
+    [Markup.button.callback("🤖 Auto Post", "geni:auto"), Markup.button.callback("⬅️ GENI", "geni:dashboard")]
+  ]);
 }
 
 function formatGeniAutoPostResult(result: GeniAutoPostResult, language?: "en" | "bn"): string {
