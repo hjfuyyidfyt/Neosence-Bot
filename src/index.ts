@@ -128,7 +128,7 @@ interface TaskDraft {
 }
 
 const taskDrafts = new Map<number, TaskDraft>();
-type GeniDraftStep = "name" | "reward" | "workers" | "shortener" | "auto_batch" | "auto_title" | "auto_instructions" | "profit_cpm" | "profit_cost" | "profit_visits" | "profit_rate";
+type GeniDraftStep = "name" | "reward" | "workers" | "shortener" | "auto_count" | "auto_reward" | "auto_workers" | "auto_preview" | "auto_title" | "auto_instructions" | "profit_cpm" | "profit_cost" | "profit_visits" | "profit_rate";
 
 interface GeniDraft {
   step: GeniDraftStep;
@@ -136,6 +136,9 @@ interface GeniDraft {
   name?: string;
   rewardPerWorker?: number;
   workerLimit?: number;
+  autoCount?: number;
+  autoMinRewardUsd?: number;
+  autoMaxRewardUsd?: number;
   profitCpmUsd?: number;
   trafficCostPerVisitUsd?: number;
   plannedVisits?: number;
@@ -1517,8 +1520,83 @@ bot.action("geni:new", async (ctx) => {
 bot.action("geni:auto", async (ctx) => {
   if (!(await requireAdminPanelCallback(ctx, "geni"))) return;
   await ctx.answerCbQuery();
-  setGeniDraft(ctx.from.id, { step: "auto_batch" });
-  await showScreen(ctx, formatGeniAutoPostPrompt(), geniCancelKeyboard());
+  setGeniDraft(ctx.from.id, { step: "auto_count" });
+  await showScreen(ctx, formatGeniAutoCountPrompt(), geniAutoCountKeyboard());
+});
+
+bot.action(/^geni:auto_count:(5|10|20|custom)$/, async (ctx) => {
+  if (!(await requireAdminPanelCallback(ctx, "geni"))) return;
+  await ctx.answerCbQuery();
+  if (ctx.match[1] === "custom") {
+    setGeniDraft(ctx.from.id, { step: "auto_count" });
+    await showScreen(ctx, "How many tasks?\n\nSend a number from 1 to 50.", geniCancelKeyboard());
+    return;
+  }
+  setGeniDraft(ctx.from.id, { step: "auto_reward", autoCount: Number(ctx.match[1]) });
+  await showScreen(ctx, formatGeniAutoRewardPrompt(Number(ctx.match[1])), geniAutoRewardKeyboard());
+});
+
+bot.action(/^geni:auto_reward:(low|medium|high|custom)$/, async (ctx) => {
+  if (!(await requireAdminPanelCallback(ctx, "geni"))) return;
+  const draft = geniDrafts.get(ctx.from.id);
+  await ctx.answerCbQuery();
+  if (!draft?.autoCount) {
+    setGeniDraft(ctx.from.id, { step: "auto_count" });
+    await showScreen(ctx, formatGeniAutoCountPrompt(), geniAutoCountKeyboard());
+    return;
+  }
+  if (ctx.match[1] === "custom") {
+    setGeniDraft(ctx.from.id, { ...draft, step: "auto_reward" });
+    await showScreen(ctx, "Send reward range.\n\nExample:\n0.034 0.06", geniCancelKeyboard());
+    return;
+  }
+  const range = geniAutoRewardPreset(ctx.match[1] as "low" | "medium" | "high");
+  setGeniDraft(ctx.from.id, { ...draft, step: "auto_workers", autoMinRewardUsd: range.min, autoMaxRewardUsd: range.max });
+  await showScreen(ctx, formatGeniAutoWorkersPrompt({ ...draft, autoMinRewardUsd: range.min, autoMaxRewardUsd: range.max }), geniAutoWorkersKeyboard());
+});
+
+bot.action(/^geni:auto_workers:(50|100|200|custom)$/, async (ctx) => {
+  if (!(await requireAdminPanelCallback(ctx, "geni"))) return;
+  const draft = geniDrafts.get(ctx.from.id);
+  await ctx.answerCbQuery();
+  if (!isReadyForAutoWorkers(draft)) {
+    setGeniDraft(ctx.from.id, { step: "auto_count" });
+    await showScreen(ctx, formatGeniAutoCountPrompt(), geniAutoCountKeyboard());
+    return;
+  }
+  if (ctx.match[1] === "custom") {
+    setGeniDraft(ctx.from.id, { ...draft, step: "auto_workers" });
+    await showScreen(ctx, "Workers per task?\n\nSend a number from 1 to 100000.", geniCancelKeyboard());
+    return;
+  }
+  const updatedDraft = { ...draft, step: "auto_preview" as const, workerLimit: Number(ctx.match[1]) };
+  setGeniDraft(ctx.from.id, updatedDraft);
+  await showScreen(ctx, formatGeniAutoPreview(updatedDraft), geniAutoPreviewKeyboard());
+});
+
+bot.action("geni:auto_publish", async (ctx) => {
+  if (!(await requireAdminPanelCallback(ctx, "geni"))) return;
+  const draft = geniDrafts.get(ctx.from.id);
+  await ctx.answerCbQuery();
+  const input = geniAutoInputFromDraft(draft);
+  if (!input) {
+    setGeniDraft(ctx.from.id, { step: "auto_count" });
+    await showScreen(ctx, formatGeniAutoCountPrompt(), geniAutoCountKeyboard());
+    return;
+  }
+  try {
+    const user = await ensureUser(ctx.from);
+    const rewardError = validateGeniAutoRewardInput(input, user.language);
+    if (rewardError) {
+      await showScreen(ctx, rewardError, geniAutoPreviewKeyboard());
+      return;
+    }
+    const result = await autoPublishGeniWebsiteTasks(ctx, input);
+    geniDrafts.delete(ctx.from.id);
+    await showScreen(ctx, formatGeniAutoPostResult(result, user.language), geniSimpleKeyboard());
+  } catch (error) {
+    await showScreen(ctx, formatGeniAutoPublishError((error as Error).message), geniAutoPreviewKeyboard());
+  }
 });
 
 bot.action("geni:auto_settings", async (ctx) => {
@@ -5521,31 +5599,37 @@ async function handleGeniDraftMessage(ctx: Context & { from: TelegramFrom; messa
     return;
   }
 
-  if (draft.step === "auto_batch") {
-    const user = await ensureUser(ctx.from);
-    const input = parseGeniAutoPostInput(text);
-    if (!input) {
-      await showFlowScreen(ctx, formatGeniAutoPostPrompt("Invalid input. Send: count minReward maxReward workers"), geniCancelKeyboard());
+  if (draft.step === "auto_count") {
+    const count = parsePositiveNumber(text, { integer: true, max: 50 });
+    if (!count) {
+      await showFlowScreen(ctx, "Send a number from 1 to 50.", geniCancelKeyboard());
       return;
     }
+    setGeniDraft(ctx.from.id, { ...draft, step: "auto_reward", autoCount: count });
+    await showFlowScreen(ctx, formatGeniAutoRewardPrompt(count), geniAutoRewardKeyboard());
+    return;
+  }
 
-    const minRewardBdt = roundMoney(input.minRewardUsd * config.usdToBdt);
-    const maxRewardBdt = roundMoney(input.maxRewardUsd * config.usdToBdt);
-    try {
-      assertMinimumReward("website", minRewardBdt, user.language);
-      assertMinimumReward("website", maxRewardBdt, user.language);
-    } catch (error) {
-      await showFlowScreen(ctx, (error as Error).message, geniCancelKeyboard());
+  if (draft.step === "auto_reward") {
+    const range = parseGeniAutoRewardRange(text);
+    if (!range) {
+      await showFlowScreen(ctx, "Send reward range like this:\n0.034 0.06", geniCancelKeyboard());
       return;
     }
+    setGeniDraft(ctx.from.id, { ...draft, step: "auto_workers", autoMinRewardUsd: range.min, autoMaxRewardUsd: range.max });
+    await showFlowScreen(ctx, formatGeniAutoWorkersPrompt({ ...draft, autoMinRewardUsd: range.min, autoMaxRewardUsd: range.max }), geniAutoWorkersKeyboard());
+    return;
+  }
 
-    try {
-      const result = await autoPublishGeniWebsiteTasks(ctx, input);
-      geniDrafts.delete(ctx.from.id);
-      await showFlowScreen(ctx, formatGeniAutoPostResult(result, user.language), geniSimpleKeyboard());
-    } catch (error) {
-      await showFlowScreen(ctx, (error as Error).message, geniCancelKeyboard());
+  if (draft.step === "auto_workers") {
+    const workers = parsePositiveNumber(text, { integer: true, max: 100000 });
+    if (!workers) {
+      await showFlowScreen(ctx, "Send worker count from 1 to 100000.", geniCancelKeyboard());
+      return;
     }
+    const updatedDraft = { ...draft, step: "auto_preview" as const, workerLimit: workers };
+    setGeniDraft(ctx.from.id, updatedDraft);
+    await showFlowScreen(ctx, formatGeniAutoPreview(updatedDraft), geniAutoPreviewKeyboard());
     return;
   }
 
@@ -5826,25 +5910,52 @@ async function createShrinkMeShortUrl(destinationUrl: string): Promise<string> {
   return body.shortenedUrl;
 }
 
-function parseGeniAutoPostInput(text: string): GeniAutoPostInput | undefined {
+function randomBetween(min: number, max: number): number {
+  return min + Math.random() * (max - min);
+}
+
+function geniAutoRewardPreset(preset: "low" | "medium" | "high"): { min: number; max: number } {
+  if (preset === "medium") return { min: 0.05, max: 0.08 };
+  if (preset === "high") return { min: 0.08, max: 0.12 };
+  return { min: 0.034, max: 0.05 };
+}
+
+function parseGeniAutoRewardRange(text: string): { min: number; max: number } | undefined {
   const values = text.replace(/[$,]/g, " ").split(/\s+/).filter(Boolean).map(Number);
-  if (values.length < 4 || values.some((value) => !Number.isFinite(value))) return undefined;
-  const [countRaw, minRewardUsd, maxRewardUsd, workerRaw] = values;
-  const count = Math.round(countRaw);
-  const workerLimit = Math.round(workerRaw);
-  if (count < 1 || count > 50) return undefined;
-  if (workerLimit < 1 || workerLimit > 100000) return undefined;
-  if (minRewardUsd <= 0 || maxRewardUsd < minRewardUsd) return undefined;
+  if (values.length < 2 || values.some((value) => !Number.isFinite(value))) return undefined;
+  const [min, max] = values;
+  if (min <= 0 || max < min) return undefined;
+  return { min: roundTo(min, 4), max: roundTo(max, 4) };
+}
+
+function isReadyForAutoWorkers(draft: GeniDraft | undefined): draft is GeniDraft & { autoCount: number; autoMinRewardUsd: number; autoMaxRewardUsd: number } {
+  return Boolean(draft?.autoCount && draft.autoMinRewardUsd && draft.autoMaxRewardUsd);
+}
+
+function geniAutoInputFromDraft(draft: GeniDraft | undefined): GeniAutoPostInput | undefined {
+  if (!draft?.autoCount || !draft.autoMinRewardUsd || !draft.autoMaxRewardUsd || !draft.workerLimit) return undefined;
   return {
-    count,
-    minRewardUsd: roundTo(minRewardUsd, 4),
-    maxRewardUsd: roundTo(maxRewardUsd, 4),
-    workerLimit
+    count: draft.autoCount,
+    minRewardUsd: draft.autoMinRewardUsd,
+    maxRewardUsd: draft.autoMaxRewardUsd,
+    workerLimit: draft.workerLimit
   };
 }
 
-function randomBetween(min: number, max: number): number {
-  return min + Math.random() * (max - min);
+function estimateGeniAutoEscrow(input: GeniAutoPostInput): number {
+  const averageRewardBdt = ((input.minRewardUsd + input.maxRewardUsd) / 2) * config.usdToBdt;
+  const averageTotal = averageRewardBdt * input.workerLimit * input.count;
+  return roundMoney(averageTotal * (1 + config.platformFeePercent / 100));
+}
+
+function validateGeniAutoRewardInput(input: GeniAutoPostInput, language?: "en" | "bn"): string | undefined {
+  try {
+    assertMinimumReward("website", roundMoney(input.minRewardUsd * config.usdToBdt), language);
+    assertMinimumReward("website", roundMoney(input.maxRewardUsd * config.usdToBdt), language);
+    return undefined;
+  } catch (error) {
+    return (error as Error).message;
+  }
 }
 
 function autoGeniTaskName(index: number, total: number): string {
@@ -6095,23 +6206,90 @@ function geniAdvancedKeyboard() {
   ]);
 }
 
-function formatGeniAutoPostPrompt(error?: string): string {
+function formatGeniAutoCountPrompt(): string {
   return [
     "🤖 GENI Auto Post",
     "",
-    error,
-    error ? "" : undefined,
-    "Send one line:",
-    "count minReward maxReward workers",
+    "How many tasks do you want to create?"
+  ].join("\n");
+}
+
+function geniAutoCountKeyboard() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("5", "geni:auto_count:5"), Markup.button.callback("10", "geni:auto_count:10"), Markup.button.callback("20", "geni:auto_count:20")],
+    [Markup.button.callback("Custom", "geni:auto_count:custom")],
+    [Markup.button.callback("⚙️ Settings", "geni:auto_settings"), Markup.button.callback("Cancel", "geni:cancel")]
+  ]);
+}
+
+function formatGeniAutoRewardPrompt(count: number): string {
+  return [
+    "🤖 GENI Auto Post",
     "",
-    "Example:",
-    "10 0.034 0.06 100",
+    `Tasks: ${count}`,
     "",
-    `Default title: ${geniDefaultTitle()}`,
-    `Default instruction: ${geniDefaultInstructions()}`,
+    "Choose reward range."
+  ].join("\n");
+}
+
+function geniAutoRewardKeyboard() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("Low", "geni:auto_reward:low"), Markup.button.callback("Medium", "geni:auto_reward:medium"), Markup.button.callback("High", "geni:auto_reward:high")],
+    [Markup.button.callback("Custom", "geni:auto_reward:custom")],
+    [Markup.button.callback("Back", "geni:auto"), Markup.button.callback("Cancel", "geni:cancel")]
+  ]);
+}
+
+function formatGeniAutoWorkersPrompt(draft: Pick<GeniDraft, "autoCount" | "autoMinRewardUsd" | "autoMaxRewardUsd">): string {
+  return [
+    "🤖 GENI Auto Post",
     "",
-    "ShrinkMe API token must be set in Railway env as SHRINKME_API_TOKEN.",
-    "Manual Post Website Task will stay available."
+    `Tasks: ${draft.autoCount ?? "-"}`,
+    `Reward: $${draft.autoMinRewardUsd} - $${draft.autoMaxRewardUsd}`,
+    "",
+    "Workers per task?"
+  ].join("\n");
+}
+
+function geniAutoWorkersKeyboard() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("50", "geni:auto_workers:50"), Markup.button.callback("100", "geni:auto_workers:100"), Markup.button.callback("200", "geni:auto_workers:200")],
+    [Markup.button.callback("Custom", "geni:auto_workers:custom")],
+    [Markup.button.callback("Back", "geni:auto"), Markup.button.callback("Cancel", "geni:cancel")]
+  ]);
+}
+
+function formatGeniAutoPreview(draft: GeniDraft): string {
+  const input = geniAutoInputFromDraft(draft);
+  return [
+    "🤖 Auto Post Preview",
+    "",
+    `Tasks: ${draft.autoCount ?? "-"}`,
+    `Reward: $${draft.autoMinRewardUsd} - $${draft.autoMaxRewardUsd}`,
+    `Workers: ${draft.workerLimit ?? "-"} each`,
+    `Title: ${geniDefaultTitle()}`,
+    "Instruction: saved",
+    "",
+    `Estimated escrow: ${input ? formatMoneyDetail(estimateGeniAutoEscrow(input), "en") : "-"}`
+  ].join("\n");
+}
+
+function geniAutoPreviewKeyboard() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("Publish", "geni:auto_publish")],
+    [Markup.button.callback("Edit", "geni:auto"), Markup.button.callback("Settings", "geni:auto_settings")],
+    [Markup.button.callback("Cancel", "geni:cancel")]
+  ]);
+}
+
+function formatGeniAutoPublishError(message: string): string {
+  const apiMissing = message.toLowerCase().includes("api token");
+  return [
+    "🤖 Auto Post",
+    "",
+    apiMissing ? "ShrinkMe API is not connected." : message,
+    "",
+    apiMissing ? "Add the API token first, then try again." : undefined
   ].filter((line): line is string => line !== undefined).join("\n");
 }
 
